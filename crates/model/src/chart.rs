@@ -512,13 +512,8 @@ impl Chart {
         } else {
             vec![]
         };
-        let mut c = Chart {
-            kind,
-            categories,
-            gridlines: true,
-            legend: (kind == ChartType::BoxWhisker).then(|| "b".to_string()),
-            ..Default::default()
-        };
+        let mut c =
+            Chart { kind, categories, gridlines: true, legend: (kind == ChartType::BoxWhisker).then(|| "b".to_string()), ..Default::default() };
         for s in 0..n_series {
             c.series.push(Series {
                 name: format!("Series {}", s + 1),
