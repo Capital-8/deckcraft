@@ -82,11 +82,11 @@ fn smartart(app: &mut SlideApp, ui: &mut Ui) {
     ui.add_space(4.0);
     for (i, node) in d.nodes.iter().enumerate() {
         let Some(draft) = drafts.get_mut(i) else { break };
-        let id = egui::Id::new(("smartart_line", gid.0, i));
+        let id = egui::Id::unique(("smartart_line", gid.0, i));
         ui.horizontal(|ui| {
             ui.add_space(16.0 * node.level as f32);
             ui.label("•");
-            let te = egui::TextEdit::singleline(draft).id(id).desired_width(f32::INFINITY);
+            let te = egui::TextEdit::singleline(draft).id(id).hint_text("SmartArt text").desired_width(f32::INFINITY);
             let r = ui.add(te);
             if app.ui.smartart_focus == Some(i) {
                 r.request_focus();
@@ -327,7 +327,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             }
         }
         "size" => {
-            let lock_id = egui::Id::new("fmt-lock-aspect");
+            let lock_id = egui::Id::unique("fmt-lock-aspect");
             let mut lock: bool = ui.data_mut(|d| d.get_temp(lock_id).unwrap_or(false));
             let locked = lock;
             let mut fields = |ui: &mut Ui, label: &str, id: &str, v: f64, key: &str, cmd: &str, unit: f64| {
@@ -355,10 +355,10 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             fields(ui, "Vertical", "fy", x.y, "y", "shape.move", 72.0);
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Alt Text").font(theme::bold(13.0)));
-            let id = ui.id().with(("alt", uid, sh.id.0));
+            let id = ui.scope_id().with(("alt", uid, sh.id.0));
             let stored: Option<(String, String)> = ui.data_mut(|d| d.get_temp(id));
             let mut alt = widgets::text_draft(stored, &sh.descr);
-            let r = ui.add(egui::TextEdit::multiline(&mut alt).desired_rows(3).desired_width(f32::INFINITY));
+            let r = ui.add(egui::TextEdit::multiline(&mut alt).hint_text("Alt text").desired_rows(3).desired_width(f32::INFINITY));
             if r.lost_focus() && alt != sh.descr {
                 run(app, "shape.altText", json!({"text": alt}));
             }
@@ -480,13 +480,13 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                 None => ("shape.fill".into(), json!({"none": true})),
             });
             ui.horizontal(|ui| {
-                ui.label("Transparency");
+                let label = ui.label("Transparency");
                 // Seed from this shape. A shared temp defaulted to 0, so a shape that was
                 // already 40% transparent showed as opaque, and leaving the slider wrote 0.
                 let seed = solid_fill_transparency_percent(sh.fill.as_ref());
-                let id = ui.id().with(("ftr", sh.id.0));
+                let id = ui.scope_id().with(("ftr", sh.id.0));
                 let mut v: f32 = ui.data_mut(|d| d.get_temp(id).unwrap_or(seed));
-                let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%"));
+                let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
                 if r.drag_stopped() || r.lost_focus() {
                     if let Some(t) = fill_transparency_to_apply(v, seed) {
                         let _ = app.run("shape.fill", json!({"transparency": t}));
@@ -550,15 +550,16 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
 /// `shape.line` with `{key: value}`.
 fn line_choice(app: &mut SlideApp, ui: &mut Ui, label: &str, key: &str, current: &str, items: &[(&str, &str)]) {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+        let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
         let shown = items.iter().find(|(_, v)| *v == current).map_or(current, |(l, _)| *l);
-        egui::ComboBox::from_id_salt(("fmt-line", key)).selected_text(shown).width(120.0).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt(("fmt-line", key)).selected_text(shown).width(120.0).show_ui(ui, |ui| {
             for (l, v) in items {
                 if ui.selectable_label(*v == current, *l).clicked() {
                     run(app, "shape.line", json!({key: v}));
                 }
             }
         });
+        let _ = combo.response.labelled_by(field.id);
     });
 }
 
@@ -622,11 +623,11 @@ fn fx_slider(
     scale: f64,
 ) {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+        let label = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
         // Hold the value while dragging; otherwise follow the shape.
-        let sid = ui.id().with(id);
+        let sid = ui.scope_id().with(id);
         let mut v: f64 = ui.data_mut(|d| d.get_temp(sid)).unwrap_or(value);
-        let r = ui.add(egui::Slider::new(&mut v, range).suffix(suffix).max_decimals(0));
+        let r = ui.add(egui::Slider::new(&mut v, range).suffix(suffix).max_decimals(0)).labelled_by(label.id);
         if r.dragged() || r.has_focus() {
             ui.data_mut(|d| d.insert_temp(sid, v));
         } else {
@@ -653,9 +654,9 @@ fn pick_fill_picture(app: &mut SlideApp) {
 /// when it changes.
 fn pic_drag(app: &mut SlideApp, ui: &mut Ui, label: &str, value: f64, suffix: &str, key: &str, scale: f64) {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+        let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
         let mut v = value;
-        let r = ui.add(egui::DragValue::new(&mut v).suffix(suffix).max_decimals(1));
+        let r = ui.add(egui::DragValue::new(&mut v).suffix(suffix).max_decimals(1)).labelled_by(field.id);
         if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()) {
             run(app, "shape.fill", json!({"pictureProps": {key: v * scale}}));
         }
@@ -695,24 +696,25 @@ fn picture_fill_options(app: &mut SlideApp, ui: &mut Ui, id: u32, pf: &deckcraft
             let mirrors = [("none", "None"), ("x", "Horizontal"), ("y", "Vertical"), ("xy", "Both")];
             for (label, key, opts, cur) in [("Alignment", "align", &aligns[..], align), ("Mirror type", "mirror", &mirrors[..], flip)] {
                 ui.horizontal(|ui| {
-                    ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+                    let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
                     let shown = opts.iter().find(|(k, _)| k == cur).map_or(opts[0].1, |(_, l)| *l);
-                    egui::ComboBox::from_id_salt(("picfill", id, key)).selected_text(shown).show_ui(ui, |ui| {
+                    let combo = egui::ComboBox::from_id_salt(("picfill", id, key)).selected_text(shown).show_ui(ui, |ui| {
                         for (k, l) in opts {
                             if ui.selectable_label(*k == cur.as_str(), *l).clicked() {
                                 run(app, "shape.fill", json!({"pictureProps": {key: k}}));
                             }
                         }
                     });
+                    let _ = combo.response.labelled_by(field.id);
                 });
             }
         }
         PictureMode::Stretch { fill_rect } => {
             for (i, label) in ["Offset left", "Offset top", "Offset right", "Offset bottom"].into_iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+                    let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
                     let mut v = fill_rect[i] * 100.0;
-                    let r = ui.add(egui::DragValue::new(&mut v).suffix("%").max_decimals(0));
+                    let r = ui.add(egui::DragValue::new(&mut v).suffix("%").max_decimals(0)).labelled_by(field.id);
                     if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()) {
                         let mut rect = *fill_rect;
                         rect[i] = v / 100.0;
@@ -747,23 +749,24 @@ fn preset_label(name: &str) -> String {
 /// A drop-down of `options`; picking one runs `shape.effects` with `{threeD: {key: option}}`.
 fn three_d_combo(app: &mut SlideApp, ui: &mut Ui, id: u32, label: &str, key: &str, cur: &str, options: &[&str]) {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
-        egui::ComboBox::from_id_salt(("3d", id, key)).selected_text(preset_label(cur)).width(170.0).show_ui(ui, |ui| {
+        let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+        let combo = egui::ComboBox::from_id_salt(("3d", id, key)).selected_text(preset_label(cur)).width(170.0).show_ui(ui, |ui| {
             for o in options {
                 if ui.selectable_label(*o == cur, preset_label(o)).clicked() {
                     run(app, "shape.effects", json!({"threeD": {key: o}}));
                 }
             }
         });
+        let _ = combo.response.labelled_by(field.id);
     });
 }
 
 /// A number field running `shape.effects` with `{threeD: {key: value}}` when it changes.
 fn three_d_drag(app: &mut SlideApp, ui: &mut Ui, label: &str, value: f64, suffix: &str, key: &str) {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
+        let field = ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
         let mut v = value;
-        let r = ui.add(egui::DragValue::new(&mut v).suffix(suffix).max_decimals(1));
+        let r = ui.add(egui::DragValue::new(&mut v).suffix(suffix).max_decimals(1)).labelled_by(field.id);
         if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()) {
             run(app, "shape.effects", json!({"threeD": {key: v}}));
         }
@@ -970,8 +973,8 @@ fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_mo
         _ => "Top Left",
     };
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(72.0, 20.0), egui::Label::new("Alignment"));
-        egui::ComboBox::from_id_salt("bg-align").selected_text(align_name).width(140.0).show_ui(ui, |ui| {
+        let field = ui.add_sized(vec2(72.0, 20.0), egui::Label::new("Alignment"));
+        let combo = egui::ComboBox::from_id_salt("bg-align").selected_text(align_name).width(140.0).show_ui(ui, |ui| {
             for (k, l) in [
                 ("tl", "Top Left"),
                 ("t", "Top"),
@@ -988,6 +991,7 @@ fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_mo
                 }
             }
         });
+        let _ = combo.response.labelled_by(field.id);
     });
     let mirror_name = match flip.as_str() {
         "x" => "Horizontal",
@@ -996,14 +1000,15 @@ fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_mo
         _ => "None",
     };
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(72.0, 20.0), egui::Label::new("Mirror"));
-        egui::ComboBox::from_id_salt("bg-mirror").selected_text(mirror_name).width(140.0).show_ui(ui, |ui| {
+        let field = ui.add_sized(vec2(72.0, 20.0), egui::Label::new("Mirror"));
+        let combo = egui::ComboBox::from_id_salt("bg-mirror").selected_text(mirror_name).width(140.0).show_ui(ui, |ui| {
             for (k, l) in [("none", "None"), ("x", "Horizontal"), ("y", "Vertical"), ("xy", "Both")] {
                 if ui.selectable_label(flip == k, l).clicked() {
                     run(app, "design.background", json!({"pictureProps": {"mirror": k}}));
                 }
             }
         });
+        let _ = combo.response.labelled_by(field.id);
     });
 }
 
@@ -1020,7 +1025,7 @@ fn animation(app: &mut SlideApp, ui: &mut Ui) {
     // Play From starts at the effect last clicked here, or else the first effect of the selected
     // shape; with nothing selected it is Play All. Reordering or removing forgets the click: the
     // index would point at another effect.
-    let pick_id = egui::Id::new(("anim_pane_pick", st.uid, st.selection.slide));
+    let pick_id = egui::Id::unique(("anim_pane_pick", st.uid, st.selection.slide));
     let pick = ui.data(|m| m.get_temp::<usize>(pick_id));
     // A triggered effect is not on the click sequence, so it can't be played from.
     let eligible = |i: usize| anims.get(i).is_some_and(|a| selected.contains(&a.shape.0)) && tl.start_of(i).is_some();
@@ -1094,17 +1099,17 @@ fn animation(app: &mut SlideApp, ui: &mut Ui) {
                 pos2(x_of(b.start + b.span).max(x_of(b.start) + 4.0), r.center().y + 5.0),
             );
             let edge = Rect::from_min_max(pos2(bar.max.x - 3.0, bar.min.y - 3.0), pos2(bar.max.x + 4.0, bar.max.y + 3.0));
-            let body_resp = ui.interact(bar, ui.id().with(("anim_bar", i)), Sense::drag()).on_hover_text(animtimeline::label(b));
-            body_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Timing bar {}", i + 1)));
-            let edge_resp = ui.interact(edge, ui.id().with(("anim_edge", i)), Sense::drag());
-            edge_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("Duration handle {}", i + 1)));
+            let body_resp = ui.interact(bar, ui.scope_id().with(("anim_bar", i)), Sense::drag()).on_hover_text(animtimeline::label(b));
+            body_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, format!("Timing bar {}", i + 1)));
+            let edge_resp = ui.interact(edge, ui.scope_id().with(("anim_edge", i)), Sense::drag());
+            edge_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, format!("Duration handle {}", i + 1)));
             if edge_resp.hovered() || edge_resp.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             } else if body_resp.hovered() || body_resp.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
             // The drag offset is remembered: the pointer's press origin is gone on release.
-            let dx_id = ui.id().with(("anim_drag_dx", i));
+            let dx_id = ui.scope_id().with(("anim_drag_dx", i));
             let live = ui.input(|inp| match (inp.pointer.press_origin(), inp.pointer.interact_pos()) {
                 (Some(o), Some(p)) => Some(p.x - o.x),
                 _ => None,
@@ -1310,7 +1315,7 @@ fn comment_card(app: &mut SlideApp, ui: &mut Ui, slide: usize, index: usize, c: 
                 ui.label(egui::RichText::new(format!("↳ {}: {}", r.author, r.text)).color(t.text_dim));
             }
             ui.horizontal(|ui| {
-                let id = ui.id().with(("reply", slide, index));
+                let id = ui.scope_id().with(("reply", slide, index));
                 let mut txt: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
                 let r = ui.add(egui::TextEdit::singleline(&mut txt).hint_text("Reply…").desired_width(ui.available_width() - 70.0));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !txt.trim().is_empty() {
@@ -1335,7 +1340,7 @@ fn comment_card(app: &mut SlideApp, ui: &mut Ui, slide: usize, index: usize, c: 
             });
         });
     if focused {
-        let key = egui::Id::new("comment-focus-scrolled");
+        let key = egui::Id::unique("comment-focus-scrolled");
         let seen = ui.data(|d| d.get_temp::<(usize, usize)>(key));
         if seen != Some((slide, index)) {
             ui.scroll_to_rect(shown.response.rect, Some(egui::Align::Center));
@@ -1367,7 +1372,7 @@ fn designer(app: &mut SlideApp, ui: &mut Ui) {
     let px = (w * ppp).round().max(16.0) as u32;
     let ideas = deckcraft_engine::cmd::ideas::ideas_for(&doc, idx);
     let themes = deckcraft_model::theme::builtin_themes();
-    let cache_id = egui::Id::new("design-idea-thumbs");
+    let cache_id = egui::Id::unique("design-idea-thumbs");
     let key = (key_doc.0, key_doc.1, idx, px);
     let mut cache: IdeaThumbs = ui.ctx().data_mut(|d| d.get_temp(cache_id)).unwrap_or_default();
     if cache.key != key || cache.tex.is_empty() {
@@ -1448,11 +1453,11 @@ pub(crate) fn text_transparency_of(sh: &deckcraft_model::Shape) -> f64 {
 /// Text Fill › Transparency, as in PowerPoint's Format Shape › Text Options (#32).
 pub(crate) fn text_transparency_slider(app: &mut SlideApp, ui: &mut Ui, sh: &deckcraft_model::Shape) {
     ui.horizontal(|ui| {
-        ui.label("Transparency");
-        let id = ui.id().with(("text-transparency", sh.id));
+        let label = ui.label("Transparency");
+        let id = ui.scope_id().with(("text-transparency", sh.id));
         let stored = (text_transparency_of(sh) * 100.0) as f32;
         let mut v: f32 = ui.data_mut(|d| d.get_temp(id).unwrap_or(stored));
-        let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%"));
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
         if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()) {
             let _ = app.run("format.textTransparency", json!({"value": v as f64 / 100.0}));
             ui.data_mut(|d| d.remove::<f32>(id));
@@ -1553,9 +1558,14 @@ mod tests {
         assert!(clear.iter().any(|v| (*v - 40.0).abs() < 0.5), "40% fill should show 40%, got {clear:?}");
         assert_eq!(solid_alpha(h.state(), b), Some(60_000));
 
-        h.get_by_label("Transparency").click();
+        // 0.37 exposes the slider's numeric entry as a SpinButton with the same name; target the
+        // Slider itself so the click lands on the slider, not its text field. A click at its
+        // middle is a real edit (50%), not a side effect of opening the pane or selecting b.
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").click();
         h.run_steps(2);
-        assert_eq!(solid_alpha(h.state(), b), Some(60_000));
+        assert_eq!(solid_alpha(h.state(), b), Some(50_000));
+        let changed: Vec<f64> = slider_values(&h);
+        assert!(changed.iter().any(|v| (*v - 50.0).abs() < 0.5), "the changed slider shows 50%, got {changed:?}");
     }
 }
 

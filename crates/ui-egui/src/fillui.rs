@@ -106,7 +106,7 @@ const DIRECTIONS_PATH: [(&str, [f64; 4]); 5] = [
 pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) -> Option<Gradient> {
     let t = Tokens::get(ui.ctx());
     let mut out: Option<Gradient> = None;
-    let sel_id = ui.id().with((id, "stop"));
+    let sel_id = ui.scope_id().with((id, "stop"));
     let mut sel: usize = ui.data_mut(|d| d.get_temp(sel_id).unwrap_or(0)).min(g.stops.len().saturating_sub(1));
 
     // Preset variations of the first stop's colour.
@@ -167,8 +167,8 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
         GradientShape::Path { .. } => "Radial",
     };
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Type"));
-        egui::ComboBox::from_id_salt((id, "kind")).selected_text(kind).width(120.0).show_ui(ui, |ui| {
+        let field = ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Type"));
+        let combo = egui::ComboBox::from_id_salt((id, "kind")).selected_text(kind).width(120.0).show_ui(ui, |ui| {
             for k in ["Linear", "Radial", "Rectangular", "Path"] {
                 if ui.selectable_label(kind == k, k).clicked() && kind != k {
                     let focus = match &g.shape {
@@ -185,6 +185,7 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
                 }
             }
         });
+        let _ = combo.response.labelled_by(field.id);
     });
     ui.horizontal_wrapped(|ui| {
         ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Direction"));
@@ -220,15 +221,17 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
     ui.add_space(4.0);
     ui.label("Gradient stops");
     let (bar, bar_resp) = ui.allocate_exact_size(vec2(ui.available_width().min(260.0), 18.0), Sense::click());
+    bar_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Gradient bar"));
     paint_bar(ui, bar, g, sc);
     let (marks, _) = ui.allocate_exact_size(vec2(bar.width(), 14.0), Sense::hover());
-    let drag_id = ui.id().with((id, "drag"));
+    let drag_id = ui.scope_id().with((id, "drag"));
     let mut dragging: Option<(usize, f64)> = ui.data_mut(|d| d.get_temp(drag_id));
     for (i, s) in g.stops.iter().enumerate() {
         let pos = dragging.filter(|d| d.0 == i).map_or(s.pos, |d| d.1);
         let x = bar.min.x + pos as f32 * bar.width();
         let r = Rect::from_center_size(pos2(x, marks.center().y), vec2(10.0, 12.0));
-        let resp = ui.interact(r, ui.id().with((id, "mark", i)), Sense::click_and_drag());
+        let resp = ui.interact(r, ui.scope_id().with((id, "mark", i)), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Gradient stop {}", i + 1)));
         let fill = c32(&s.color, sc);
         let stroke = if i == sel { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, t.handle_stroke) };
         let tri = vec![pos2(x, r.min.y), pos2(r.max.x, r.min.y + 4.0), pos2(r.max.x, r.max.y), pos2(r.min.x, r.max.y), pos2(r.min.x, r.min.y + 4.0)];
@@ -303,10 +306,10 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
             }
         });
         ui.horizontal(|ui| {
-            ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Transparency"));
-            let key = ui.id().with((id, "tr", sel));
+            let label = ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Transparency"));
+            let key = ui.scope_id().with((id, "tr", sel));
             let mut tr: f32 = ui.data_mut(|d| d.get_temp(key).unwrap_or(((1.0 - alpha_of(&s.color)) * 100.0) as f32));
-            let r = ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).suffix("%"));
+            let r = ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).suffix("%")).labelled_by(label.id);
             if r.changed() {
                 ui.data_mut(|d| d.insert_temp(key, tr));
             }

@@ -41,7 +41,7 @@ artwork. The ribbon and menu icons stay original drawings.
 
 | Asset | Author | Source | Licence | Used for |
 |---|---|---|---|---|
-| Ubuntu Light (`Ubuntu-Light.ttf`, via the `epaint_default_fonts` crate 0.36) | Dalton Maag Ltd for Canonical | https://crates.io/crates/epaint_default_fonts | Ubuntu Font Licence 1.0 | Last-resort text face when no other font is available; UI fallback |
+| Ubuntu Light (`Ubuntu-Light.ttf`, via the `epaint_default_fonts` crate 0.37) | Dalton Maag Ltd for Canonical | https://crates.io/crates/epaint_default_fonts | Ubuntu Font Licence 1.0 | Last-resort text face when no other font is available; UI fallback |
 | Hack Regular, Noto Emoji, emoji-icon-font (via `epaint_default_fonts` / egui) | Source Foundry; Google; Jakub Steiner et al. | https://crates.io/crates/epaint_default_fonts | MIT / Bitstream-Vera, OFL-1.1, MIT | egui UI fallback glyphs |
 
 ## Embedded at build time from craft-fonts (`CRAFT_FONTS_DIR`)
@@ -58,9 +58,14 @@ families excluded by `crates/fonts/build.rs`:
 | Carlito, Caladea | OFL-1.1 | Metric-compatible stand-ins for documents that ask for Calibri / Cambria |
 | Liberation Sans, Serif, Mono | OFL-1.1 | Metric-compatible stand-ins for Arial, Times New Roman, Courier New |
 | Montserrat, Lato, Open Sans, Roboto, Merriweather, Playfair Display, Poppins, Nunito Sans | OFL-1.1 | Theme fonts |
-| BIZ UDPGothic, BIZ UDMincho, Shippori Mincho, Noto Sans Arabic | OFL-1.1 | Japanese and Arabic text |
+| BIZ UDPGothic, BIZ UDMincho, Shippori Mincho | OFL-1.1 | Japanese text |
+| Noto Sans Arabic, Noto Sans Hebrew | OFL-1.1 | Arabic and Hebrew text |
+| Noto Sans Thai, Noto Sans Georgian | OFL-1.1 | Thai and Georgian text |
+| NanumGothic | OFL-1.1 | Korean text and interface fallback |
+| Noto Sans Symbols, Noto Sans Symbols 2 | OFL-1.1 | Interface symbol fallback |
 
-Web (wasm32) builds embed only Inter Regular/Bold and BIZ UDPGothic Regular.
+Web (wasm32) builds embed only Inter Regular/Bold (and a Variable face where the Latin manifest
+provides one) and BIZ UDPGothic Regular.
 
 ## PDF writer colour profiles
 
@@ -75,3 +80,13 @@ is copied into this repository. The licence text is in `licenses/pdf-writer/LICE
 | `krilla 0.8.2 / icc/sGrey-v4.icc` | Clinton Ingram (Compact ICC Profiles) | https://github.com/LaurenzV/krilla/blob/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/crates/krilla/icc/sGrey-v4.icc | CC0-1.0 | `00c0f94e09127520a17dc0e1d9264b5702081d96dbdb1549ee88e3631ce42a9d` | PDF export colour profiles |
 | `krilla 0.8.2 / icc/sRGB-v2-magic.icc` | Clinton Ingram (Compact ICC Profiles) | https://github.com/LaurenzV/krilla/blob/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/crates/krilla/icc/sRGB-v2-magic.icc | CC0-1.0 | `af4efe28f6d311799865f325ba39184a2e978b113ca74124d60af7de22b105f4` | PDF export colour profiles |
 | `krilla 0.8.2 / icc/sRGB-v4.icc` | Clinton Ingram (Compact ICC Profiles) | https://github.com/LaurenzV/krilla/blob/3ffdf0588cf98050aad6edba51ca70162e1fb5b5/crates/krilla/icc/sRGB-v4.icc | CC0-1.0 | `c56e1685d888f5edb92fe07f2750f387f8fe8e91b32ff8fb0b56bfbbb9458353` | PDF export colour profiles |
+
+### Optional native Chinese fallback
+
+Native builds also read craft-fonts' `fonts/simplified-chinese-manifest.txt` when present.
+This opt-in does not enter the wasm font allowlist. Font bytes and the full licence remain
+in craft-fonts, including the LXGW Reserved Font Names and original Klee notice.
+
+| Family | Author | Source | Licence | Use |
+|---|---|---|---|---|
+| LXGW WenKai Lite Regular 1.530 | LXGW; original Klee Project Authors / Fontworks | https://github.com/lxgw/LxgwWenKai-Lite/tree/b712c83d98acf977bacfb7fb010207802808bda9 | OFL-1.1, unmodified upstream font | Native Chinese glyph fallback after existing UI faces; font SHA256 `f799a538a3355877e597a0ae04050e897932c9ae7689eb9227c2953c5dd549ea`, OFL SHA256 `0333a85fe077b6849f8e417acc44e8bd879442ceb681e271acf93e2d57fd4e2e` |

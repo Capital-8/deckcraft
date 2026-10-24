@@ -57,22 +57,7 @@ impl Trendline {
                 let yhat: Vec<f64> = xs.iter().map(|x| poly_y(&coeff, *x)).collect();
                 (Model::Poly(coeff), ys, yhat)
             }
-            TrendlineType::Exp => {
-                let pairs: Vec<(f64, f64)> = pairs.into_iter().filter(|(_, y)| *y > 0.0).collect();
-                if pairs.len() < 2 {
-                    return None;
-                }
-                let (xs, ln_y): (Vec<f64>, Vec<f64>) = pairs.iter().map(|(x, y)| (*x, y.ln())).unzip();
-                let fixed = intercept.filter(|c| *c > 0.0).map(|c| c.ln());
-                let (ln_c, b) = linreg(&xs, &ln_y, fixed)?;
-                let c = ln_c.exp();
-                if !c.is_finite() || c <= 0.0 {
-                    return None;
-                }
-                let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
-                let yhat: Vec<f64> = xs.iter().map(|x| c * (b * x).exp()).collect();
-                (Model::Exp { c, b }, ys, yhat)
-            }
+            TrendlineType::Exp => fit_exp(&pairs, intercept)?,
             TrendlineType::Log => {
                 let pairs: Vec<(f64, f64)> = pairs.into_iter().filter(|(x, _)| *x > 0.0).collect();
                 if pairs.len() < 2 {
@@ -83,43 +68,10 @@ impl Trendline {
                 let yhat: Vec<f64> = ln_x.iter().map(|u| b + c * u).collect();
                 (Model::Log { b, c }, ys, yhat)
             }
-            TrendlineType::Power => {
-                let pairs: Vec<(f64, f64)> = pairs.into_iter().filter(|(x, y)| *x > 0.0 && *y > 0.0).collect();
-                if pairs.len() < 2 {
-                    return None;
-                }
-                let (ln_x, ln_y): (Vec<f64>, Vec<f64>) = pairs.iter().map(|(x, y)| (x.ln(), y.ln())).unzip();
-                let fixed = intercept.filter(|c| *c > 0.0).map(|c| c.ln());
-                let (ln_c, b) = linreg(&ln_x, &ln_y, fixed)?;
-                let c = ln_c.exp();
-                if !c.is_finite() || c <= 0.0 {
-                    return None;
-                }
-                let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
-                let yhat: Vec<f64> = pairs.iter().map(|(x, _)| c * x.powf(b)).collect();
-                (Model::Power { c, b }, ys, yhat)
-            }
+            TrendlineType::Power => fit_power(&pairs, intercept)?,
             TrendlineType::MovingAvg => {
                 let period = self.period.unwrap_or(2).clamp(2, 255) as usize;
-                if pairs.len() <= period {
-                    return None;
-                }
-                let mut pts = Vec::new();
-                let mut ys = Vec::new();
-                let mut yhat = Vec::new();
-                for i in period - 1..pairs.len() {
-                    let window = &pairs[i + 1 - period..=i];
-                    let avg = window.iter().map(|(_, y)| y).sum::<f64>() / period as f64;
-                    if avg.is_finite() {
-                        pts.push((pairs[i].0, avg));
-                        ys.push(pairs[i].1);
-                        yhat.push(avg);
-                    }
-                }
-                if pts.len() < 2 {
-                    return None;
-                }
-                (Model::Moving(pts), ys, yhat)
+                fit_moving_avg(&pairs, period)?
             }
         };
         if yhat.iter().any(|v| !v.is_finite()) {
@@ -325,6 +277,89 @@ fn poly_y(coeff: &[f64], x: f64) -> f64 {
     acc
 }
 
+fn fit_exp(pairs: &[(f64, f64)], intercept: Option<f64>) -> Option<(Model, Vec<f64>, Vec<f64>)> {
+    let pairs: Vec<(f64, f64)> = pairs.iter().copied().filter(|(_, y)| *y > 0.0).collect();
+    if pairs.len() < 2 {
+        return None;
+    }
+    let (xs, ln_y): (Vec<f64>, Vec<f64>) = pairs.iter().map(|(x, y)| (*x, y.ln())).unzip();
+    let fixed = intercept.filter(|c| *c > 0.0).map(f64::ln);
+    let (ln_c, b) = linreg(&xs, &ln_y, fixed)?;
+    let c = ln_c.exp();
+    if !c.is_finite() || c <= 0.0 {
+        return None;
+    }
+    let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+    let yhat: Vec<f64> = xs.iter().map(|x| c * (b * x).exp()).collect();
+    Some((Model::Exp { c, b }, ys, yhat))
+}
+
+fn fit_power(pairs: &[(f64, f64)], intercept: Option<f64>) -> Option<(Model, Vec<f64>, Vec<f64>)> {
+    let pairs: Vec<(f64, f64)> = pairs.iter().copied().filter(|(x, y)| *x > 0.0 && *y > 0.0).collect();
+    if pairs.len() < 2 {
+        return None;
+    }
+    let (ln_x, ln_y): (Vec<f64>, Vec<f64>) = pairs.iter().map(|(x, y)| (x.ln(), y.ln())).unzip();
+    let fixed = intercept.filter(|c| *c > 0.0).map(f64::ln);
+    let (ln_c, b) = linreg(&ln_x, &ln_y, fixed)?;
+    let c = ln_c.exp();
+    if !c.is_finite() || c <= 0.0 {
+        return None;
+    }
+    let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+    let yhat: Vec<f64> = pairs.iter().map(|(x, _)| c * x.powf(b)).collect();
+    Some((Model::Power { c, b }, ys, yhat))
+}
+
+fn fit_moving_avg(pairs: &[(f64, f64)], period: usize) -> Option<(Model, Vec<f64>, Vec<f64>)> {
+    if pairs.len() <= period {
+        return None;
+    }
+    let mut pts = Vec::new();
+    let mut ys = Vec::new();
+    let mut yhat = Vec::new();
+    for i in period - 1..pairs.len() {
+        let window = &pairs[i + 1 - period..=i];
+        let avg = window.iter().map(|(_, y)| y).sum::<f64>() / period as f64;
+        if avg.is_finite() {
+            pts.push((pairs[i].0, avg));
+            ys.push(pairs[i].1);
+            yhat.push(avg);
+        }
+    }
+    if pts.len() < 2 {
+        return None;
+    }
+    Some((Model::Moving(pts), ys, yhat))
+}
+
+#[allow(clippy::needless_range_loop)]
+fn polyfit_with_intercept(xs: &[f64], ys: &[f64], order: usize, b0: f64) -> Option<Vec<f64>> {
+    let m = order;
+    let mut ata = vec![vec![0.0; m]; m];
+    let mut atb = vec![0.0; m];
+    for (x, y) in xs.iter().zip(ys) {
+        let dy = y - b0;
+        for i in 0..m {
+            let xi = x.powi((i + 1) as i32);
+            atb[i] += dy * xi;
+            for j in i..m {
+                ata[i][j] += xi * x.powi((j + 1) as i32);
+            }
+        }
+    }
+    for i in 0..m {
+        for j in 0..i {
+            ata[i][j] = ata[j][i];
+        }
+    }
+    let solved = solve(ata, atb)?;
+    let mut coeff = Vec::with_capacity(order + 1);
+    coeff.push(b0);
+    coeff.extend(solved);
+    coeff.iter().all(|v| v.is_finite()).then_some(coeff)
+}
+
 /// Polynomial through the normal equations. `x` is centred when the intercept is free, then
 /// expanded back to powers of `x`, so order 6 on category numbers stays solvable.
 #[allow(clippy::needless_range_loop)] // the index is the power in the normal equations
@@ -334,29 +369,7 @@ fn polyfit(xs: &[f64], ys: &[f64], order: usize, intercept: Option<f64>) -> Opti
         return None;
     }
     if let Some(b0) = intercept {
-        let m = order;
-        let mut ata = vec![vec![0.0; m]; m];
-        let mut atb = vec![0.0; m];
-        for (x, y) in xs.iter().zip(ys) {
-            let dy = y - b0;
-            for i in 0..m {
-                let xi = x.powi((i + 1) as i32);
-                atb[i] += dy * xi;
-                for j in i..m {
-                    ata[i][j] += xi * x.powi((j + 1) as i32);
-                }
-            }
-        }
-        for i in 0..m {
-            for j in 0..i {
-                ata[i][j] = ata[j][i];
-            }
-        }
-        let solved = solve(ata, atb)?;
-        let mut coeff = Vec::with_capacity(order + 1);
-        coeff.push(b0);
-        coeff.extend(solved);
-        return coeff.iter().all(|v| v.is_finite()).then_some(coeff);
+        return polyfit_with_intercept(xs, ys, order, b0);
     }
     let xm = xs.iter().sum::<f64>() / n as f64;
     let us: Vec<f64> = xs.iter().map(|x| x - xm).collect();

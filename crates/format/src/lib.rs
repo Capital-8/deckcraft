@@ -1070,33 +1070,33 @@ mod tests {
             assert_eq!(md_list_item(not), None, "{not:?}");
         }
     }
-}
 
-/// #814: slides_to_outline includes table cell text, which it used to skip.
-#[test]
-fn outline_includes_table_text() {
-    use deckcraft_model::table::{Cell, Row, Table};
-    use deckcraft_model::{Shape, ShapeKind, Xfrm};
-    let mut p = defaults::new_presentation(None);
-    let layout = defaults::layout_of_kind(&p, LayoutType::TitleAndContent).unwrap();
-    let mut s = defaults::new_slide(&mut p, layout).expect("slide");
-    s.shapes.retain(|sh| !sh.ph_type().is_some_and(|k| k.is_title()));
-    let mut body = Shape { xfrm: Some(Xfrm::new(0.0, 0.0, 600.0, 100.0)), ..Default::default() };
-    body.text = Some(TextBody::from_text("Text box body"));
-    s.shapes.push(body);
+    /// #814: slides_to_outline includes table cell text, which it used to skip.
+    #[test]
+    fn outline_includes_table_text() {
+        use deckcraft_model::table::{Cell, Row, Table};
+        use deckcraft_model::{Shape, ShapeKind, Xfrm};
+        let mut p = defaults::new_presentation(None);
+        let layout = defaults::layout_of_kind(&p, LayoutType::TitleAndContent).unwrap();
+        let mut s = defaults::new_slide(&mut p, layout).expect("slide");
+        s.shapes.retain(|sh| !sh.ph_type().is_some_and(|k| k.is_title()));
+        let mut body = Shape { xfrm: Some(Xfrm::new(0.0, 0.0, 600.0, 100.0)), ..Default::default() };
+        body.text = Some(TextBody::from_text("Text box body"));
+        s.shapes.push(body);
 
-    let mut table = Table { cols: vec![200.0, 200.0], ..Default::default() };
-    for texts in [["Cell A1", "Cell B1"], ["Cell A2", "Cell B2"]] {
-        let cells: Vec<Cell> = texts.iter().map(|t| Cell { text: TextBody::from_text(t), ..Default::default() }).collect();
-        table.rows.push(Row { height: 30.0, cells });
+        let mut table = Table { cols: vec![200.0, 200.0], ..Default::default() };
+        for texts in [["Cell A1", "Cell B1"], ["Cell A2", "Cell B2"]] {
+            let cells: Vec<Cell> = texts.iter().map(|t| Cell { text: TextBody::from_text(t), ..Default::default() }).collect();
+            table.rows.push(Row { height: 30.0, cells });
+        }
+        let mut tbl = Shape { xfrm: Some(Xfrm::new(0.0, 100.0, 400.0, 60.0)), ..Default::default() };
+        tbl.kind = ShapeKind::Table(table);
+        s.shapes.push(tbl);
+        p.slides = vec![std::sync::Arc::new(s)];
+
+        let out = slides_to_outline(&p);
+        assert!(out.contains("Text box body"), "{out}");
+        assert!(out.contains("Cell A1\tCell B1"), "{out}");
+        assert!(out.contains("Cell A2\tCell B2"), "{out}");
     }
-    let mut tbl = Shape { xfrm: Some(Xfrm::new(0.0, 100.0, 400.0, 60.0)), ..Default::default() };
-    tbl.kind = ShapeKind::Table(table);
-    s.shapes.push(tbl);
-    p.slides = vec![std::sync::Arc::new(s)];
-
-    let out = slides_to_outline(&p);
-    assert!(out.contains("Text box body"), "{out}");
-    assert!(out.contains("Cell A1\tCell B1"), "{out}");
-    assert!(out.contains("Cell A2\tCell B2"), "{out}");
 }

@@ -578,7 +578,7 @@ fn tf_decode(start: usize, end: usize, is_transient: bool, tf_res: &mut [i32; NB
     let mut budget = dec.storage() as i32 * 8;
     let mut tell = dec.tell();
     let mut logp: u32 = if is_transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp as i32 + 1 <= budget;
+    let tf_select_rsv = lm > 0 && tell + (logp as i32) < budget;
     budget -= tf_select_rsv as i32;
     let mut tf_changed = 0;
     let mut curr = 0;

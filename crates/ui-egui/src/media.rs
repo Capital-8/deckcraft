@@ -288,10 +288,10 @@ impl MediaHost {
         self.videos.get(&id).and_then(|v| v.tex.as_ref())
     }
 
-    /// Per frame: run the clocks, upload due video frames, apply loop/rewind, and report state to
-    /// the engine. Returns whether anything is playing (the caller keeps repainting).
-    pub fn tick(&mut self, ctx: &egui::Context, session: &mut Session) -> bool {
-        let now = ctx.input(|i| i.time);
+    /// Run the media clocks, apply loop/rewind and report state to the engine. Called from
+    /// `logic` on every call (including hidden logic), with monotonic seconds, so playback does
+    /// not depend on a painted frame. Returns whether anything is playing.
+    pub fn tick_clock(&mut self, now: f64, session: &mut Session) -> bool {
         self.player.tick(now);
         let mut ended = vec![];
         for (id, owned) in &self.owners {
@@ -305,21 +305,6 @@ impl MediaHost {
         // Rewind after playing: back to the poster.
         for id in ended {
             self.stop(id);
-        }
-        for (id, v) in &mut self.videos {
-            let Some(st) = self.player.status(key(*id)) else { continue };
-            let Some(feed) = v.feed.as_mut() else { continue };
-            let f = feed.frame_at(st.position);
-            if let Some(f) = f
-                && v.frame.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &f))
-            {
-                let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-                match v.tex.as_mut() {
-                    Some(t) => crate::textures::replace(ctx, t, img),
-                    None => v.tex = Some(crate::textures::upload(ctx, format!("media-{id}"), img)),
-                }
-                v.frame = Some(f);
-            }
         }
         session.media_status = self
             .owners
@@ -338,11 +323,27 @@ impl MediaHost {
                 })
             })
             .collect();
-        let playing = self.owners.keys().any(|id| self.is_playing(*id));
-        if playing {
-            ctx.request_repaint_after(std::time::Duration::from_millis(15));
+        self.owners.keys().any(|id| self.is_playing(*id))
+    }
+
+    /// Upload due video frames for the pass that is about to draw them. Called only from the real
+    /// UI phase: a hidden window accumulates no texture uploads and catches up when it appears.
+    pub fn sync_video_textures(&mut self, ctx: &egui::Context) {
+        for (id, v) in &mut self.videos {
+            let Some(st) = self.player.status(key(*id)) else { continue };
+            let Some(feed) = v.feed.as_mut() else { continue };
+            let f = feed.frame_at(st.position);
+            if let Some(f) = f
+                && v.frame.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &f))
+            {
+                let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+                match v.tex.as_mut() {
+                    Some(t) => crate::textures::replace(ctx, t, img),
+                    None => v.tex = Some(crate::textures::upload(ctx, format!("media-{id}"), img)),
+                }
+                v.frame = Some(f);
+            }
         }
-        playing
     }
 
     /// Carry out a `media.*` request from the engine for presentation `doc_uid`.
@@ -480,7 +481,14 @@ pub fn control_bar(ui: &mut Ui, rect: Rect, status: Option<&VoiceStatus>, clip: 
     let button = |ui: &mut Ui, x: &mut f32, id: &str, paint: &dyn Fn(&egui::Painter, Rect)| -> bool {
         let r = Rect::from_min_size(pos2(*x, rect.min.y + 2.0), vec2(h - 4.0, h - 4.0));
         *x += h - 2.0;
-        let resp = ui.interact(r, ui.id().with(("media_bar", id)), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with(("media_bar", id)), Sense::click());
+        let name = match id {
+            "play" => "Play or pause media",
+            "back" => "Back 0.25 seconds",
+            "fwd" => "Forward 0.25 seconds",
+            _ => "Media control",
+        };
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
         if resp.hovered() {
             painter.rect_filled(r, CornerRadius::same(3), Color32::from_white_alpha(28));
         }
@@ -534,7 +542,8 @@ pub fn control_bar(ui: &mut Ui, rect: Rect, status: Option<&VoiceStatus>, clip: 
         }
         painter.circle_filled(pos2(done.max.x, track.center().y), 5.0, white);
         let hit = track.expand2(vec2(4.0, 8.0));
-        let resp = ui.interact(hit, ui.id().with("media_bar_track"), Sense::click_and_drag());
+        let resp = ui.interact(hit, ui.scope_id().with("media_bar_track"), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Media position"));
         if (resp.clicked() || resp.dragged())
             && duration > 0.0
             && let Some(p) = resp.interact_pointer_pos()

@@ -491,50 +491,66 @@ impl Default for Chart {
 }
 
 impl Chart {
+    fn sample_treemap_sunburst(kind: ChartType) -> Self {
+        let mut c = Chart {
+            kind,
+            categories: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"].iter().map(ToString::to_string).collect(),
+            category_levels: vec![["Q1", "Q1", "Q1", "Q2", "Q2", "Q2", "Q3", "Q3"].iter().map(ToString::to_string).collect()],
+            vary_colors: true,
+            ..Default::default()
+        };
+        let v = [4.2, 2.8, 3.6, 4.7, 2.6, 4.1, 1.9, 3.0];
+        c.series.push(Series { name: "Series 1".into(), values: v.iter().map(|x| Some(*x)).collect(), ..Default::default() });
+        c
+    }
+
+    fn sample_observation_chart(kind: ChartType) -> Self {
+        let obs = [12.0, 15.0, 17.0, 18.0, 21.0, 22.0, 22.0, 24.0, 25.0, 27.0, 28.0, 31.0, 33.0, 36.0, 41.0, 48.0];
+        let n_series = if kind == ChartType::BoxWhisker { 2 } else { 1 };
+        let categories = if kind == ChartType::BoxWhisker {
+            (0..obs.len()).map(|i| if i % 2 == 0 { "Group A" } else { "Group B" }.to_string()).collect()
+        } else {
+            vec![]
+        };
+        let mut c =
+            Chart { kind, categories, gridlines: true, legend: (kind == ChartType::BoxWhisker).then(|| "b".to_string()), ..Default::default() };
+        for s in 0..n_series {
+            c.series.push(Series {
+                name: format!("Series {}", s + 1),
+                values: obs.iter().map(|v| Some(v + s as f64 * 6.0)).collect(),
+                ..Default::default()
+            });
+        }
+        c
+    }
+
+    fn sample_stock() -> Self {
+        let mut c = Chart {
+            kind: ChartType::Stock,
+            categories: ["Mon", "Tue", "Wed", "Thu", "Fri"].iter().map(ToString::to_string).collect(),
+            ..Default::default()
+        };
+        let hlc = [("High", [55.0, 57.0, 57.0, 58.0, 58.0]), ("Low", [11.0, 12.0, 13.0, 11.0, 25.0]), ("Close", [25.0, 38.0, 50.0, 35.0, 43.0])];
+        for (name, v) in hlc {
+            c.series.push(Series { name: name.into(), values: v.iter().map(|x| Some(*x)).collect(), ..Default::default() });
+        }
+        c
+    }
+
     /// The sample data a new chart starts with (our own numbers).
     pub fn sample(kind: ChartType) -> Self {
-        let cats = ["Q1", "Q2", "Q3", "Q4"];
-        let data = [[4.2, 2.6, 2.1], [2.8, 4.1, 2.4], [3.6, 1.9, 3.3], [4.7, 3.0, 5.1]];
-        let mut c = Chart { kind, categories: cats.iter().map(|s| s.to_string()).collect(), ..Default::default() };
         if matches!(kind, ChartType::Treemap | ChartType::Sunburst) {
-            // A two-level hierarchy: months inside quarters.
-            c.categories = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"].iter().map(|s| s.to_string()).collect();
-            c.category_levels = vec![["Q1", "Q1", "Q1", "Q2", "Q2", "Q2", "Q3", "Q3"].iter().map(|s| s.to_string()).collect()];
-            let v = [4.2, 2.8, 3.6, 4.7, 2.6, 4.1, 1.9, 3.0];
-            c.series.push(Series { name: "Series 1".into(), values: v.iter().map(|x| Some(*x)).collect(), ..Default::default() });
-            c.vary_colors = true;
-            return c;
+            return Self::sample_treemap_sunburst(kind);
         }
         if matches!(kind, ChartType::Histogram | ChartType::Pareto | ChartType::BoxWhisker) {
-            // These plot raw observations: a histogram bins one series, a box chart summarises
-            // each category's points.
-            let obs = [12.0, 15.0, 17.0, 18.0, 21.0, 22.0, 22.0, 24.0, 25.0, 27.0, 28.0, 31.0, 33.0, 36.0, 41.0, 48.0];
-            let n_series = if kind == ChartType::BoxWhisker { 2 } else { 1 };
-            c.categories = if kind == ChartType::BoxWhisker {
-                (0..obs.len()).map(|i| if i % 2 == 0 { "Group A" } else { "Group B" }.to_string()).collect()
-            } else {
-                vec![]
-            };
-            for s in 0..n_series {
-                c.series.push(Series {
-                    name: format!("Series {}", s + 1),
-                    values: obs.iter().map(|v| Some(v + s as f64 * 6.0)).collect(),
-                    ..Default::default()
-                });
-            }
-            c.gridlines = true;
-            c.legend = (kind == ChartType::BoxWhisker).then(|| "b".to_string());
-            return c;
+            return Self::sample_observation_chart(kind);
         }
         if kind == ChartType::Stock {
-            // High-low-close over five days, the series in the order PowerPoint expects.
-            c.categories = ["Mon", "Tue", "Wed", "Thu", "Fri"].iter().map(|s| s.to_string()).collect();
-            let hlc = [("High", [55.0, 57.0, 57.0, 58.0, 58.0]), ("Low", [11.0, 12.0, 13.0, 11.0, 25.0]), ("Close", [25.0, 38.0, 50.0, 35.0, 43.0])];
-            for (name, v) in hlc {
-                c.series.push(Series { name: name.into(), values: v.iter().map(|x| Some(*x)).collect(), ..Default::default() });
-            }
-            return c;
+            return Self::sample_stock();
         }
+        let cats = ["Q1", "Q2", "Q3", "Q4"];
+        let data = [[4.2, 2.6, 2.1], [2.8, 4.1, 2.4], [3.6, 1.9, 3.3], [4.7, 3.0, 5.1]];
+        let mut c = Chart { kind, categories: cats.iter().map(ToString::to_string).collect(), ..Default::default() };
         let n_series =
             if matches!(kind, ChartType::Pie | ChartType::Doughnut | ChartType::Funnel | ChartType::Waterfall | ChartType::Treemap) { 1 } else { 3 };
         for s in 0..n_series {
@@ -699,38 +715,52 @@ impl Chart {
         crate::numfmt::format(code.map_or("General", String::as_str), v, self.lang.as_deref())
     }
 
-    /// Value range across series (stacked sums for stacked types).
-    pub fn value_range(&self) -> (f64, f64) {
+    fn waterfall_value_range(&self) -> (f64, f64) {
         let mut lo: f64 = 0.0;
         let mut hi: f64 = 0.0;
-        if self.kind == ChartType::Waterfall {
-            for (a, b) in self.waterfall_bars() {
-                lo = lo.min(a.min(b));
-                hi = hi.max(a.max(b));
+        for (a, b) in self.waterfall_bars() {
+            lo = lo.min(a.min(b));
+            hi = hi.max(a.max(b));
+        }
+        (lo, hi)
+    }
+
+    fn stacked_value_range(&self, n: usize) -> (f64, f64) {
+        let mut lo: f64 = 0.0;
+        let mut hi: f64 = 0.0;
+        for i in 0..n {
+            let (mut p, mut m) = (0.0, 0.0);
+            for s in &self.series {
+                let v = s.values.get(i).copied().flatten().unwrap_or(0.0);
+                if v >= 0.0 { p += v } else { m += v }
             }
-            return (lo, hi);
+            hi = hi.max(p);
+            lo = lo.min(m);
+        }
+        (lo, hi)
+    }
+
+    /// Value range across series (stacked sums for stacked types).
+    pub fn value_range(&self) -> (f64, f64) {
+        if self.kind == ChartType::Waterfall {
+            return self.waterfall_value_range();
         }
         let n = self.categories.len().max(self.series.iter().map(|s| s.values.len()).max().unwrap_or(0));
-        if self.kind.stacked() {
-            for i in 0..n {
-                let (mut p, mut m) = (0.0, 0.0);
-                for s in &self.series {
-                    let v = s.values.get(i).copied().flatten().unwrap_or(0.0);
-                    if v >= 0.0 { p += v } else { m += v }
-                }
-                hi = hi.max(p);
-                lo = lo.min(m);
-            }
+        let (mut lo, mut hi) = if self.kind.stacked() {
+            self.stacked_value_range(n)
         } else {
+            let mut l: f64 = 0.0;
+            let mut h: f64 = 0.0;
             for s in &self.series {
                 for v in s.values.iter().flatten() {
                     if v.is_finite() {
-                        hi = hi.max(*v);
-                        lo = lo.min(*v);
+                        h = h.max(*v);
+                        l = l.min(*v);
                     }
                 }
             }
-        }
+            (l, h)
+        };
         if self.kind.percent() {
             return (0.0, 1.0);
         }

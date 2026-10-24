@@ -71,7 +71,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
         x[i + stride] = c * x2 + s * x1;
         x[i] = c * x1 + ms * x2;
     }
-    if len >= 2 * stride + 1 {
+    if len > 2 * stride {
         for i in (0..=len - 2 * stride - 1).rev() {
             let x1 = x[i];
             let x2 = x[i + stride];

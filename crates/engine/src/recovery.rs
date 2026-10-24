@@ -152,13 +152,13 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
     let Ok(rd) = std::fs::read_dir(dir) else { return out };
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("deckcraft") {
+        if p.extension().and_then(std::ffi::OsStr::to_str) != Some("deckcraft") {
             continue;
         }
         if !std::fs::metadata(&p).is_ok_and(|m| m.is_file()) {
             continue;
         }
-        let Some(uid) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
+        let Some(uid) = p.file_stem().and_then(std::ffi::OsStr::to_str).and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Metadata is a file on disk: anything but an object (corrupt, hand-edited) counts as none.
         let meta = read_regular(&p.with_extension("json"), MAX_META_BYTES)
             .and_then(|t| serde_json::from_slice::<Value>(&t).ok())

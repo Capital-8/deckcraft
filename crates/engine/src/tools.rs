@@ -451,7 +451,7 @@ impl Session {
         }
         // A press (not a hover) settles an input method's composition, as clicking does in PowerPoint.
         if !matches!(ev.kind, PointerKind::Move) {
-            self.end_composition();
+            self.settle_composition();
         }
         match ev.kind {
             PointerKind::Move => {

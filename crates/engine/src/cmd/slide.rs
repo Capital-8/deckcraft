@@ -539,9 +539,9 @@ fn section_add(s: &mut Session, p: &Value) -> Result<Value> {
         if doc.sections.is_empty() {
             // The slides before `at` go into a "Default Section".
             if at > 0 {
-                doc.sections.push(Section { name: "Default Section".into(), slides: ids.get(..at).map(|x| x.to_vec()).unwrap_or_default() });
+                doc.sections.push(Section { name: "Default Section".into(), slides: ids.get(..at).map(<[_]>::to_vec).unwrap_or_default() });
             }
-            doc.sections.push(Section { name, slides: ids.get(at..).map(|x| x.to_vec()).unwrap_or_default() });
+            doc.sections.push(Section { name, slides: ids.get(at..).map(<[_]>::to_vec).unwrap_or_default() });
         } else {
             let Some(start) = ids.get(at).copied() else { return Err(bad("section.add", "no slide")) };
             let si = doc.section_of(start).unwrap_or(0);

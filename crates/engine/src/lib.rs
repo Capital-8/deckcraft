@@ -482,6 +482,8 @@ pub struct Session {
     /// Presentations a host read off the UI thread, waiting for `file.adopt` (by token).
     loaded: Vec<(u64, cmd::file::LoadedFile)>,
     next_loaded: u64,
+    /// Compositions the application settled itself (see [`Session::composition_settles`]).
+    composition_settles: u64,
 }
 
 impl Default for Session {
@@ -513,6 +515,7 @@ impl Session {
             panics_caught: 0,
             loaded: vec![],
             next_loaded: 0,
+            composition_settles: 0,
         }
     }
     /// Hand over a presentation read on another thread ([`cmd::file::read_presentation_file`]);
@@ -590,7 +593,7 @@ impl Session {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         // Any other edit (or a click, a key, undo) settles an input method's composition first.
         if self.depth == 0 && (spec.journal || spec.undoable) && !matches!(id, "text.compose" | "text.commit") {
-            self.end_composition();
+            self.settle_composition();
         }
         if let Err(e) = (spec.enabled)(self) {
             let named = (e == cmd::NOTHING_SELECTED || e == cmd::SELECT_TWO) && (params.get("ids").is_some() || params.get("id").is_some());
@@ -660,12 +663,36 @@ impl Session {
 
     /// Keep an input method's composition as it stands (#101): its text stays and the whole
     /// composition becomes one undo step. Nothing happens without one.
+    ///
+    /// This is also how the input method's own commit ends a composition: the platform has
+    /// already finished that one, so it must not ask for an interrupt.
     pub fn end_composition(&mut self) {
         let Some(st) = self.active_mut() else { return };
         let Some(c) = st.composition.take() else { return };
         if !Arc::ptr_eq(&c.before, &st.doc) {
             push_undo(st, HistoryEntry { label: "Type Text".into(), doc: c.before, selection: c.before_selection });
         }
+    }
+
+    /// Settle a composition because the application did something else (a click, a key, a
+    /// command, a target change) rather than because the input method committed it.
+    ///
+    /// The platform still holds its own copy of that composition, so a host must publish one
+    /// `should_interrupt_composition` for each increment of [`Self::composition_settles`]: the
+    /// backend then cancels it instead of committing its text into whatever is selected next.
+    pub fn settle_composition(&mut self) {
+        if self.active().is_some_and(|d| d.composition.is_some()) {
+            self.composition_settles = self.composition_settles.wrapping_add(1);
+        }
+        self.end_composition();
+    }
+
+    /// How many compositions the application settled itself (clicks, keys, other commands).
+    ///
+    /// A host compares this with the value it last published; every increment is one platform
+    /// composition that must be interrupted. The input method's own commits do not count.
+    pub fn composition_settles(&self) -> u64 {
+        self.composition_settles
     }
 
     /// Change only the selection (no undo step).
@@ -683,7 +710,7 @@ impl Session {
         st.revision += 1;
         // A composition belongs to the text body it began in: leaving that body settles it.
         if st.composition.is_some() && owner(&st.selection) != before {
-            self.end_composition();
+            self.settle_composition();
         }
         Ok(())
     }

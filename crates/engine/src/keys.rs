@@ -49,7 +49,7 @@ impl Session {
     /// `ArrowLeft`…, `Home`, `End`, `PageUp`, `PageDown`, `F5`) or a character (`b`, `]`).
     /// Returns `{handled: bool, …}`.
     pub fn key(&mut self, key: &str, mods: Mods) -> Result<Value> {
-        self.end_composition();
+        self.settle_composition();
         let editing = self.active().is_some_and(|d| d.selection.text.is_some());
         let has_shapes = self.active().is_some_and(|d| !d.selection.shapes.is_empty());
         let k = key_token(key);
@@ -245,6 +245,16 @@ impl Session {
             return Ok(json!({"handled": false}));
         }
         self.execute("text.commit", &json!({"text": text}))
+    }
+
+    /// Remove text around the composition caret or selection, as an input method asks
+    /// (`ImeEvent::DeleteSurrounding`/`DeleteSurroundingBytes`). Counts are characters or UTF-8
+    /// bytes of the logical text the surrounding query publishes, so a range may cross a
+    /// paragraph mark (read as one `\n` byte) and whole scalars only are removed; out-of-range
+    /// counts are clamped. A deletion while composing stays inside the composition's single undo
+    /// step.
+    pub fn delete_surrounding(&mut self, before: usize, after: usize, bytes: bool) -> Result<Value> {
+        self.execute("text.deleteSurrounding", &json!({"before": before, "after": after, "bytes": bytes}))
     }
 
     /// Ready to take typed `text`: editing text already, or one selected shape whose text editing

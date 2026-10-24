@@ -1761,6 +1761,39 @@ fn chart_data(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn apply_bin_options(c: &mut deckcraft_model::chart::Chart, bin_count: Option<Option<u32>>, bin_size: Option<Option<f64>>) {
+    if let Some(n) = bin_count {
+        c.bin_count = n;
+        if n.is_some() {
+            c.bin_size = None;
+        }
+    }
+    if let Some(w) = bin_size {
+        c.bin_size = w;
+        if w.is_some() {
+            c.bin_count = None;
+        }
+    }
+}
+
+fn apply_subtotals_and_bars(c: &mut deckcraft_model::chart::Chart, p: &Value, subtotals: Option<&[usize]>) {
+    if let Some(t) = subtotals {
+        let n = c.series.first().map_or(0, |s| s.values.len());
+        let mut t: Vec<usize> = t.iter().copied().filter(|i| *i < n).collect();
+        t.sort_unstable();
+        t.dedup();
+        c.subtotals = t;
+    }
+    if let Some(b) = p.get("upDownBars").and_then(Value::as_bool) {
+        c.up_down_bars = b;
+        c.raw = None;
+    }
+    if let Some(q) = p.get("quartiles").and_then(Value::as_str) {
+        c.inclusive_quartiles = q.eq_ignore_ascii_case("inclusive");
+        c.raw = None;
+    }
+}
+
 fn chart_options(s: &mut Session, p: &Value) -> Result<Value> {
     // Histogram bins: a count or a width (setting one clears the other; null for automatic).
     let bin_count = p.get("binCount").map(|v| v.as_u64().map(|n| n.clamp(1, deckcraft_model::chart::MAX_BINS as u64) as u32));
@@ -1772,33 +1805,8 @@ fn chart_options(s: &mut Session, p: &Value) -> Result<Value> {
     let subtotals: Option<Vec<usize>> =
         p.get("subtotals").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|i| i as usize).collect());
     with_chart(s, p, "chart.options", |c| {
-        if let Some(n) = bin_count {
-            c.bin_count = n;
-            if n.is_some() {
-                c.bin_size = None;
-            }
-        }
-        if let Some(w) = bin_size {
-            c.bin_size = w;
-            if w.is_some() {
-                c.bin_count = None;
-            }
-        }
-        if let Some(t) = &subtotals {
-            let n = c.series.first().map_or(0, |s| s.values.len());
-            let mut t: Vec<usize> = t.iter().copied().filter(|i| *i < n).collect();
-            t.sort_unstable();
-            t.dedup();
-            c.subtotals = t;
-        }
-        if let Some(b) = p.get("upDownBars").and_then(Value::as_bool) {
-            c.up_down_bars = b;
-            c.raw = None;
-        }
-        if let Some(q) = p.get("quartiles").and_then(Value::as_str) {
-            c.inclusive_quartiles = q.eq_ignore_ascii_case("inclusive");
-            c.raw = None;
-        }
+        apply_bin_options(c, bin_count, bin_size);
+        apply_subtotals_and_bars(c, p, subtotals.as_deref());
         if bin_count.is_some() || bin_size.is_some() || subtotals.is_some() {
             c.raw = None;
         }

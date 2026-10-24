@@ -41,6 +41,12 @@ fn mods(ui: &Ui) -> Mods {
 /// The selected shapes turn with the fingers. The whole twist is one undo step. Pinch-zoom
 /// and two-finger scrolling are left as they are.
 pub(crate) fn trackpad_twist(app: &mut SlideApp, ctx: &egui::Context) {
+    if ctx.will_discard() {
+        // Multi-pass layout runs this function again with the input already consumed. Acting on
+        // the discarded pass would start the twist and the replay would immediately end it,
+        // splitting one gesture into two undo steps.
+        return;
+    }
     let delta = ctx.input(|i| i.rotation_delta());
     let delta = if delta.is_finite() { delta.clamp(-std::f32::consts::PI, std::f32::consts::PI) } else { 0.0 };
     let turning = delta.abs() > 1e-4;
@@ -144,7 +150,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let Some(st) = app.session.active() else { return };
     // The leftover fraction of a wheel line belongs to one presentation. Drop it whenever another
     // one is drawn here, hovered or not, so switching away and back starts from zero.
-    let carry_id = ui.id().with("wheel_carry");
+    let carry_id = ui.scope_id().with("wheel_carry");
     let doc_uid = st.uid;
     ui.data_mut(|d| {
         if d.get_temp::<(u64, f32)>(carry_id).is_none_or(|(uid, _)| uid != doc_uid) {
@@ -160,7 +166,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         return;
     }
     // Scroll when zoomed beyond the window.
-    let scroll_id = ui.id().with("canvas_scroll");
+    let scroll_id = ui.scope_id().with("canvas_scroll");
     let last_id = scroll_id.with("last");
     let mut offset: egui::Vec2 = ui.data_mut(|d| d.get_temp(scroll_id).unwrap_or_default());
     let last: Option<(Rect, f32)> = ui.data_mut(|d| d.get_temp(last_id));
@@ -241,7 +247,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             } else if let Some(next) = page_flick(ui.input(|i| trackpad_scroll(&i.events))) {
                 // Point-based trackpad gestures keep their cooldown. Raw input avoids reading
                 // the smoothed tail of a discrete mouse notch as another page turn.
-                let gate = ui.id().with("wheel_gate");
+                let gate = ui.scope_id().with("wheel_gate");
                 let last: f64 = ui.data_mut(|d| d.get_temp(gate).unwrap_or(f64::NEG_INFINITY));
                 let now = ui.input(|i| i.time);
                 if now - last > 0.35 {
@@ -454,17 +460,18 @@ pub fn ime_area(app: &SlideApp, xf: Xf) -> Option<Rect> {
 /// Turn the input method on for the slide while it takes typing, with its candidate window at
 /// the insertion point (#101). Without this egui leaves it off, and a Korean keyboard types
 /// separate jamo (ㅇ ㅏ ㄴ) instead of syllables. A focused text field sets its own.
-fn ime_output(app: &SlideApp, ui: &Ui, xf: Xf) {
+///
+/// This only records the screen rect for this pass. [`crate::SlideApp`] observes the committed
+/// text, owner and cause once at the end of the pass, after every IME event and editor command
+/// has settled.
+fn ime_output(app: &mut SlideApp, ui: &Ui, xf: Xf) {
     let ctx = ui.ctx();
     if ctx.memory(|m| m.focused().is_some()) || app.dialog.as_ref().is_some_and(|d| d.modal()) || app.palette.is_some() || app.backstage_open() {
         return;
     }
     let Some(r) = ime_area(app, xf) else { return };
     let to_global = ctx.layer_transform_to_global(ui.layer_id()).unwrap_or_default();
-    let r = to_global * r;
-    ctx.output_mut(|o| {
-        o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect: r, cursor_rect: r, should_interrupt_composition: false });
-    });
+    app.ime_pending = Some(to_global * r);
 }
 
 /// Play/pause on an animated GIF under the pointer or selected on its own.
@@ -483,7 +490,8 @@ fn gif_buttons(app: &mut SlideApp, ui: &mut Ui, xf: Xf, gifs: &[crate::media::Gi
         }
         let b = crate::media::gif_button_rect(r);
         // Sensing drags too keeps the press from reaching the canvas (selecting or moving the GIF).
-        let resp = ui.interact(b, ui.id().with(("gif_button", g.id.0)), Sense::click_and_drag());
+        let resp = ui.interact(b, ui.scope_id().with(("gif_button", g.id.0)), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if g.paused { "Play animated GIF" } else { "Pause animated GIF" }));
         crate::media::paint_gif_button(ui.painter(), b, g.paused, resp.hovered());
         if resp.clicked() {
             toggle = Some(g.id);
@@ -649,8 +657,9 @@ fn ruler_markers(app: &mut SlideApp, ui: &mut Ui, p: &egui::Painter, avail: Rect
     let area = Rect::from_min_max(pos2(sx(0.0), top.min.y + 2.0), pos2(sx(width), top.max.y - 1.0)).intersect(top);
     p.rect_stroke(area, CornerRadius::ZERO, Stroke::new(1.0, t.text_faint.gamma_multiply(0.5)), egui::StrokeKind::Inside);
 
-    let resp = ui.interact(top, ui.id().with("ruler_markers"), Sense::click_and_drag());
-    let id = ui.id().with("ruler_drag");
+    let resp = ui.interact(top, ui.scope_id().with("ruler_markers"), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Text ruler"));
+    let id = ui.scope_id().with("ruler_drag");
     let mut drag: Option<RulerDrag> = ui.data(|d| d.get_temp::<RulerDrag>(id));
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     if resp.drag_started()
@@ -716,17 +725,17 @@ fn ruler_markers(app: &mut SlideApp, ui: &mut Ui, p: &egui::Painter, avail: Rect
     }
     // The tab selector in the ruler's corner: a click cycles left, center, right, decimal; a click
     // on the ruler then sets that kind of stop.
-    let kind_id = ui.id().with("ruler_tab_kind");
+    let kind_id = ui.scope_id().with("ruler_tab_kind");
     let mut kind: usize = ui.data(|d| d.get_temp(kind_id)).unwrap_or(0);
     let corner = Rect::from_min_size(avail.min, vec2(16.0, 16.0));
-    let cr = ui.interact(corner, ui.id().with("ruler_tab_selector"), Sense::click());
+    let cr = ui.interact(corner, ui.scope_id().with("ruler_tab_selector"), Sense::click());
     const KINDS: [(&str, &str); 4] = [("l", "Left Tab"), ("ctr", "Center Tab"), ("r", "Right Tab"), ("dec", "Decimal Tab")];
     if cr.clicked() {
         kind = (kind + 1) % KINDS.len();
         ui.data_mut(|d| d.insert_temp(kind_id, kind));
     }
     let (kind_align, kind_label) = KINDS[kind % KINDS.len()];
-    cr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, kind_label));
+    cr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, kind_label));
     let cr = cr.on_hover_text(format!("{kind_label} (click to change)"));
     p.rect_stroke(
         corner.shrink(2.0),
@@ -1513,7 +1522,13 @@ mod tests {
     }
 
     fn ctrl_wheel(h: &mut Harness<'_, SlideApp>, lines: f32) {
-        let wheel = Event::MouseWheel { unit: MouseWheelUnit::Line, delta: vec2(0.0, lines), phase: TouchPhase::Move, modifiers: Modifiers::COMMAND };
+        let wheel = Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: vec2(0.0, lines),
+            phase: TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::COMMAND,
+        };
         h.event(wheel);
         // egui spreads a wheel notch over several frames.
         h.run_steps(30);

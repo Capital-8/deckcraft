@@ -1187,7 +1187,7 @@ fn image(r: Bytes) -> Option<ImageData> {
 fn metafile(r: Bytes) -> Option<Picture> {
     let size = r.u32(12)? as usize;
     let data = r.slice(16, size).or_else(|| r.tail(16).map(|t| t.0))?;
-    let depth = NESTING.with(|n| n.get());
+    let depth = NESTING.with(std::cell::Cell::get);
     if depth >= MAX_NESTING {
         return None;
     }

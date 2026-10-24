@@ -3233,6 +3233,32 @@ fn tables_with_a_file_defined_style_edit_and_resize() {
     use deckcraft_model::table::{TablePart, TablePartStyle, TableStyleDef};
     let mut s = session();
     let id = table_at(&mut s, &[200.0, 200.0], json!([["Hello world", "b"], ["c", "d"]]));
+    // A file-defined weight needs a real regular/bold pair, independent of missing Inter
+    // or whichever system face happened to load first. Leave bold unset for the table style.
+    let fonts = deckcraft_fonts::FontDb::global();
+    let regular = fonts.face("BIZ UDPGothic", "Regular");
+    let bold = fonts.face("BIZ UDPGothic", "Bold");
+    let metric_pair = regular.family == "BIZ UDPGothic"
+        && bold.family == "BIZ UDPGothic"
+        && regular.style == "Regular"
+        && bold.style == "Bold"
+        && regular.weight < bold.weight;
+    assert!(metric_pair || option_env!("CRAFT_FONTS_REQUIRED").is_none(), "required BIZ Regular/Bold pair is absent");
+    if metric_pair {
+        let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let slide = std::sync::Arc::make_mut(&mut doc.slides[0]);
+        let deckcraft_model::ShapeKind::Table(table) = &mut slide.shape_mut(id).unwrap().kind else { panic!("not a table") };
+        for cell in &mut table.rows[0].cells {
+            for paragraph in &mut cell.text.paragraphs {
+                for run in &mut paragraph.runs {
+                    run.props.font = Some("BIZ UDPGothic".into());
+                    run.props.bold = None;
+                }
+            }
+        }
+    } else {
+        eprintln!("optional BIZ pair absent: skipping weight-metric assertion; edit/resize checks still run");
+    }
     s.execute("text.edit", &json!({"id": id, "cell": [0, 0]})).unwrap();
     let built_in = caret_point(&s, 0, 8);
     s.execute("text.exit", &json!({})).unwrap();
@@ -3257,7 +3283,9 @@ fn tables_with_a_file_defined_style_edit_and_resize() {
     s.execute("edit.deselect", &json!({})).unwrap();
     s.execute("text.edit", &json!({"id": id, "cell": [0, 0]})).unwrap();
     let p = caret_point(&s, 0, 8);
-    assert!((p.x - built_in.x).abs() > 0.5, "the header is laid out in the file style's (regular) weight: {p:?} vs {built_in:?}");
+    if metric_pair {
+        assert!((p.x - built_in.x).abs() > 0.5, "the header is laid out in the file style's (regular) weight: {p:?} vs {built_in:?}");
+    }
     s.execute("text.exit", &json!({})).unwrap();
     s.execute("edit.deselect", &json!({})).unwrap();
     // A double-click selects the word drawn there.

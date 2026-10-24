@@ -22,9 +22,9 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
         p.text(pos2(rect.min.x + 14.0, rect.center().y), Align2::LEFT_CENTER, &left, theme::font(12.0), t.text_dim);
         // The selection's proofing language; a click opens Review › Language.
         let (lang, no_proof) = crate::dialogs::selected_language(app);
-        let name = crate::squiggles::lang_name(&lang) + if no_proof { " (not checked)" } else { "" };
+        let name = crate::squiggles::display_lang_name(ui.ctx(), &lang) + if no_proof { " (not checked)" } else { "" };
         let lr = p.text(pos2(rect.min.x + 120.0, rect.center().y), Align2::LEFT_CENTER, &name, theme::font(12.0), t.text_dim);
-        if ui.interact(lr.expand(3.0), ui.id().with("status_lang"), Sense::click()).on_hover_text("Language").clicked() {
+        if ui.interact(lr.expand(3.0), ui.scope_id().with("status_lang"), Sense::click()).on_hover_text("Language").clicked() {
             app.dialog = Some(crate::dialogs::Dialog::new("language"));
         }
         // Transient status message.
@@ -52,7 +52,15 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
         // Slider 10%–400% (log scale).
         let mut z = app.ui.zoom.unwrap_or(app.canvas_scale).clamp(0.1, 4.0);
         let mut lz = z.ln();
-        let s = right.add_sized(vec2(110.0, 18.0), egui::Slider::new(&mut lz, (0.1f32).ln()..=(4.0f32).ln()).show_value(false));
+        // egui 0.37 gives a slider its own width and the theme's control height; ask for exactly
+        // those so the status row stays consistent with every other control without hard-coding
+        // a size the slider would override anyway.
+        let slider_size = vec2(right.spacing().slider_width, right.spacing().interact_size.y);
+        let s = right.add_sized(slider_size, egui::Slider::new(&mut lz, (0.1f32).ln()..=(4.0f32).ln()).show_value(false));
+        // The status bar has no room for a visible "Zoom" label; name the slider for assistive
+        // technology only, leaving its geometry unchanged.
+        let enabled = s.enabled();
+        s.widget_info(|| egui::WidgetInfo::slider(enabled, z as f64, "Zoom"));
         if s.changed() {
             z = lz.exp();
             app.ui.zoom = Some(z);
@@ -125,7 +133,7 @@ pub fn notes_pane(app: &mut SlideApp, ui: &mut Ui) {
     let (idx, uid) = (st.selection.slide, st.uid);
     // Save an edited draft once the field has lost focus or another slide is shown (before
     // anything reloads it), to the slide it was written on.
-    let id = egui::Id::new("notes_edit");
+    let id = egui::Id::unique("notes_edit");
     let focused = ui.ctx().memory(|m| m.has_focus(id));
     if app.notes_buf.2.edited && (!focused || app.notes_buf.0 != uid || app.notes_buf.1 != idx) {
         app.notes_buf.2.edited = false;

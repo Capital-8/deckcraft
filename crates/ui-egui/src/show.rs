@@ -13,6 +13,9 @@ use crate::SlideApp;
 use crate::theme;
 
 pub struct Show {
+    /// Monotonic identity of this show instance. Starting a show again (even at the same slide
+    /// and step) is a new instance, so a queued click cannot cross an ABA transition.
+    pub(crate) instance: u64,
     pub state: ShowState,
     pub reading: bool,
     pub presenter: bool,
@@ -73,6 +76,10 @@ pub struct Show {
     media_clock: Option<(usize, f64)>,
     /// Media effects set off and not yet carried out: (shape, effect id).
     media_cues: Vec<(ShapeId, String)>,
+    /// Hidden-logic time anchor: the last visible egui time and the monotonic instant of that
+    /// visible frame. `run_logic` does not refresh `InputState::time`, so this lets a hidden show
+    /// keep playing from wall time without a draw.
+    hidden_anchor: Option<(f64, web_time::Instant)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -270,9 +277,46 @@ struct Transition {
     dur: f64,
 }
 
+/// A copy of the show's clock origins for regressions that must not depend on wall time.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClockSnapshot {
+    pub step_start: f64,
+    pub slide_start: f64,
+    pub step_end: f64,
+    pub show_start: f64,
+    pub last_move: f64,
+}
+
+/// The parts of a show that change what a window-point event means. Coordinates are relative
+/// to the whole viewport, so the step, end screen, reading/presenter layout, pen/grid/zoom modes
+/// and blank screen all have to match the batch's target as well as the instance and slide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShowInputState {
+    pub instance: u64,
+    pub slide: usize,
+    pub step: usize,
+    pub ended: bool,
+    pub reading: bool,
+    pub presenter: bool,
+    pub grid: bool,
+    pub pen: bool,
+    pub laser: bool,
+    pub blank: Option<[u8; 4]>,
+    pub zoom: Option<[u32; 3]>,
+    pub zoom_arm: bool,
+}
+
+/// True unless the root viewport explicitly reports itself minimized or fully occluded.
+/// Integrations that do not report visibility stay visible rather than freezing the show.
+pub(crate) fn viewport_visible(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.viewport().visible() != Some(false))
+}
+
 impl Show {
     pub fn new(doc: &Presentation, from: usize, reading: bool, presenter: bool) -> Self {
         Show {
+            instance: 0,
             state: ShowState::start_at(doc, from),
             reading,
             presenter,
@@ -313,7 +357,121 @@ impl Show {
             links: None,
             media_clock: None,
             media_cues: vec![],
+            hidden_anchor: None,
         }
+    }
+
+    /// Identity of the show state a queued window-point event belongs to.
+    pub(crate) fn input_state(&self) -> ShowInputState {
+        let bits = |v: f32| if v.is_finite() { v.to_bits() } else { 0 };
+        ShowInputState {
+            instance: self.instance,
+            slide: self.state.slide,
+            step: self.state.step,
+            ended: self.ended || self.state.ended,
+            reading: self.reading,
+            presenter: self.presenter,
+            grid: self.grid,
+            pen: self.pen,
+            laser: self.laser,
+            blank: self.blank.map(|c| [c.r(), c.g(), c.b(), c.a()]),
+            zoom: self.zoom.map(|z| [bits(z.nx), bits(z.ny), bits(z.scale)]),
+            zoom_arm: self.zoom_arm,
+        }
+    }
+
+    /// The show time for a hidden logic pass. `run_logic` leaves `InputState::time` at the last
+    /// visible frame, so anchor that value to the monotonic instant of the visible frame and
+    /// advance from wall time. Only a full visible UI pass re-anchors to egui's real frame time;
+    /// a visible logic-only pass must not reuse its stale input time as a new anchor.
+    pub(crate) fn hidden_logic_time(&self, visible_time: f64, now: web_time::Instant) -> f64 {
+        let (base, at) = self.hidden_anchor.unwrap_or((visible_time, now));
+        base + now.saturating_duration_since(at).as_secs_f64()
+    }
+
+    /// A visible UI pass drives the clocks through its real frame time and records the anchor a
+    /// later hidden logic tick advances from.
+    pub(crate) fn observe_visible_frame(&mut self, visible_time: f64, now: web_time::Instant) {
+        self.hidden_anchor = Some((visible_time, now));
+    }
+
+    /// Whether hidden logic is running a show that has already passed its first visible frame.
+    pub(crate) fn hidden_started(&self) -> bool {
+        self.started
+    }
+
+    /// Whether hidden logic still has time-driven work, so it must keep requesting wake-ups.
+    pub(crate) fn hidden_time_driven(&self, doc: &Presentation) -> bool {
+        self.started && !self.ended && (self.state.playing || self.trans.is_some() || self.autoplay || self.state.advance_after(doc).is_some())
+    }
+
+    /// Advance the show's own clocks and automatic steps on a hidden logic pass. Drawing is a
+    /// separate concern, so a minimized show keeps playing instead of inventing a pause policy.
+    /// Returns false when the show should close (preview ended).
+    pub(crate) fn advance_hidden(&mut self, doc: &Presentation, now: f64) -> bool {
+        self.tick_triggers(doc, now);
+        self.expire_goto(now);
+        if self.trans.as_ref().is_some_and(|trans| now - trans.start >= trans.dur.max(0.01)) {
+            self.trans = None;
+        }
+        let mut actions = Vec::new();
+        let mut keep = self.queue_clock_actions(doc, now, &mut actions);
+        for action in actions {
+            if !self.apply(action, doc, now) {
+                keep = false;
+            }
+        }
+        if self.state.playing {
+            let step = self.state.step;
+            self.cue_media(doc, step, now - self.step_start);
+        }
+        keep
+    }
+
+    /// Queue the step/auto-advance actions for `now`. Shared by the visible UI pass and the
+    /// hidden logic tick so both read the same clock. Returns false when a preview should close.
+    fn queue_clock_actions(&mut self, doc: &Presentation, now: f64, actions: &mut Vec<ShowAction>) -> bool {
+        let (step, playing) = (self.state.step, self.state.playing);
+        let t_step = if playing { now - self.step_start } else { 0.0 };
+        if playing {
+            let dur = self.timeline(doc).step_duration(step);
+            if t_step >= dur {
+                actions.push(self.state.step_done(doc));
+                self.step_end = now;
+            }
+        } else if self.trans.is_none() {
+            // Auto-advance (After: timings) or autoplay preview. An automatic first step is started
+            // by `ShowState` as the slide appears; starting it here too replayed it after Back (#844).
+            let idle = now - self.step_end.max(self.slide_start);
+            let cur_step = self.state.step;
+            let n_steps = self.timeline(doc).steps();
+            let step_due = self.autoplay && cur_step < n_steps && idle > 0.3;
+            let holding = self.grid || self.presenter_grid || self.zoom.is_some() || self.zoom_arm;
+            if !holding && (step_due || (!self.rehearse && self.state.auto_advance_due(doc, idle) && !self.ended)) {
+                actions.push(self.state.next(doc));
+            } else if self.preview_only && cur_step >= n_steps && idle > 0.8 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The clock origins used by the show, for deterministic hidden/resume regressions.
+    #[cfg(test)]
+    pub(crate) fn clock_snapshot(&self) -> ClockSnapshot {
+        ClockSnapshot {
+            step_start: self.step_start,
+            slide_start: self.slide_start,
+            step_end: self.step_end,
+            show_start: self.show_start,
+            last_move: self.last_move,
+        }
+    }
+
+    /// Presenter elapsed seconds at `now`, using the same clock as the view.
+    #[cfg(test)]
+    pub(crate) fn presenter_elapsed(&self, now: f64) -> f64 {
+        self.timer.elapsed(now)
     }
 
     /// Pen and laser are different pointers: turning one on puts the other away.
@@ -674,10 +832,31 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
     };
     let now = ctx.input(|i| i.time);
     let Some(mut show) = app.show.take() else { return };
+    if !viewport_visible(&ctx) {
+        // A forced hidden paint (for example a pending screenshot) draws the current frame;
+        // the show clocks are advanced by logic, not by this draw, so it must not advance them a
+        // second time. Keep drawing the last frame rather than returning a blank.
+        if show.started {
+            let full = ui.max_rect();
+            let avail = if show.reading { Rect::from_min_max(full.min, pos2(full.max.x, full.max.y - 34.0)) } else { full };
+            let srect = fit(avail, &doc);
+            let painter = ui.painter_at(full);
+            painter.rect_filled(full, CornerRadius::ZERO, Color32::BLACK);
+            if let Some((_, tex)) = &show.tex {
+                painter.image(tex.id(), srect, unit_uv(), Color32::WHITE);
+            }
+        }
+        app.show = Some(show);
+        return;
+    }
+    show.observe_visible_frame(now, web_time::Instant::now());
     if !show.started {
         show.started = true;
         show.slide_start = now;
         show.step_start = now;
+        // The first step is settled at the show's own start: every clock origin is a real frame
+        // time, so hiding and resuming shifts all of them by the same interval.
+        show.step_end = now;
         show.show_start = now;
         show.timer = PresenterTimer::start(now);
         show.last_move = now;
@@ -788,28 +967,9 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
             keep = false;
         }
     }
-    // Step clock.
-    let (step, playing) = (show.state.step, show.state.playing);
-    let t_step = if playing { now - show.step_start } else { 0.0 };
-    if playing {
-        let dur = show.timeline(&doc).step_duration(step);
-        if t_step >= dur {
-            actions.push(show.state.step_done(&doc));
-            show.step_end = now;
-        }
-    } else if show.trans.is_none() {
-        // Auto-advance (After: timings) or autoplay preview. An automatic first step is started
-        // by `ShowState` as the slide appears; starting it here too replayed it after Back (#844).
-        let idle = now - show.step_end.max(show.slide_start);
-        let cur_step = show.state.step;
-        let n_steps = show.timeline(&doc).steps();
-        let step_due = show.autoplay && cur_step < n_steps && idle > 0.3;
-        let holding = show.grid || show.presenter_grid || show.zoom.is_some() || show.zoom_arm;
-        if !holding && (step_due || (!show.rehearse && show.state.auto_advance_due(&doc, idle) && !show.ended)) {
-            actions.push(show.state.next(&doc));
-        } else if show.preview_only && cur_step >= n_steps && idle > 0.8 {
-            keep = false;
-        }
+    // Step clock, shared with the hidden logic tick.
+    if !show.queue_clock_actions(&doc, now, &mut actions) {
+        keep = false;
     }
     for a in actions {
         if !show.apply(a, &doc, now) {
@@ -1083,7 +1243,10 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
     // Pen.
-    let resp = ui.interact(full, ui.id().with("show_pen"), if show.pen { Sense::drag() } else { Sense::hover() });
+    let resp = ui.interact(full, ui.scope_id().with("show_pen"), if show.pen { Sense::drag() } else { Sense::hover() });
+    if show.pen {
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Pen"));
+    }
     if show.pen {
         if resp.drag_started() {
             show.strokes.push(vec![]);
@@ -2008,7 +2171,7 @@ fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, no
                 if show.presenter_grid {
                     // The grid fills this window; the audience keeps seeing the current slide.
                     paint_grid(ui.painter(), ui.ctx(), show, doc, avail);
-                    let hit = ui.interact(avail, ui.id().with("presenter_grid"), Sense::click());
+                    let hit = ui.interact(avail, ui.scope_id().with("presenter_grid"), Sense::click());
                     if hit.clicked()
                         && let Some(p) = hit.interact_pointer_pos()
                         && let Some(n) = see_all_hit(avail, grid_indices(doc.slides.len()).len(), slide_aspect(doc), p)
@@ -2034,7 +2197,8 @@ fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, no
                     ui.painter().rect_stroke(mark, CornerRadius::ZERO, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Inside);
                 }
                 if show.zoom_arm {
-                    let hit = ui.interact(cr, ui.id().with("presenter_zoom"), Sense::click());
+                    let hit = ui.interact(cr, ui.scope_id().with("presenter_zoom"), Sense::click());
+                    hit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Zoom"));
                     if hit.clicked()
                         && let Some(p) = hit.interact_pointer_pos()
                         && cr.width() > 1.0
@@ -2583,6 +2747,34 @@ mod tests {
         assert_eq!(font_of("Agenda"), theme::font(24.0));
     }
 
+    /// Hidden logic keeps playing from wall time even though `run_logic` leaves egui's input
+    /// time at the last visible frame. A visible pass re-anchors instead of shifting a pause.
+    #[test]
+    fn hidden_logic_advances_the_show_and_visible_frames_reanchor() {
+        let mut s = deckcraft_engine::Session::with_new();
+        s.execute("slide.new", &json!({})).unwrap();
+        let doc = s.active().unwrap().doc.clone();
+        let mut show = Show::new(&doc, 0, false, true);
+        show.started = true;
+        show.step_start = 10.0;
+        show.slide_start = 10.0;
+        show.step_end = 10.0;
+        show.show_start = 10.0;
+        show.last_move = 10.0;
+        show.timer = PresenterTimer::start(10.0);
+        let t0 = web_time::Instant::now();
+        show.observe_visible_frame(10.0, t0);
+        assert_eq!(show.hidden_logic_time(10.0, t0), 10.0, "the first hidden tick starts at the last visible time");
+        let hidden = show.hidden_logic_time(10.0, t0 + std::time::Duration::from_secs(2));
+        assert!((hidden - 12.0).abs() < 1e-9, "hidden logic advances the show time: {hidden}");
+        assert!((show.presenter_elapsed(hidden) - 2.0).abs() < 1e-9, "presenter time keeps running");
+        assert!((show.clock_snapshot().step_start - 10.0).abs() < 1e-9, "the clock origin is not shifted");
+        let later = show.hidden_logic_time(10.0, t0 + std::time::Duration::from_secs(5));
+        assert!((later - 15.0).abs() < 1e-9, "repeated hidden ticks do not stack a pause: {later}");
+        show.observe_visible_frame(20.0, t0 + std::time::Duration::from_secs(10));
+        assert_eq!(show.hidden_logic_time(20.0, t0 + std::time::Duration::from_secs(10)), 20.0, "a visible frame re-anchors");
+    }
+
     #[test]
     fn presenter_timer_pauses_resets_and_notes_size_clamps() {
         let mut t = PresenterTimer::start(10.0);
@@ -2711,5 +2903,49 @@ mod tests {
         }
         let st = &harness.state().show.as_ref().unwrap().state;
         assert_eq!(st.slide, 0, "five Backs leave slide 2 (step {}, playing {})", st.step, st.playing);
+    }
+
+    #[test]
+    fn input_state_tracks_the_modes_that_move_show_click_targets() {
+        let session = deckcraft_engine::Session::with_new();
+        let doc = &session.active().unwrap().doc;
+        let mut show = Show::new(doc, 0, false, false);
+        let base = show.input_state();
+        assert_eq!(show.input_state(), base);
+
+        show.instance += 1;
+        assert_ne!(show.input_state(), base, "a new show instance is a new input target");
+        show.instance = base.instance;
+
+        show.reading = true;
+        assert_ne!(show.input_state(), base, "the reading layout moves the slide");
+        show.reading = false;
+
+        show.presenter = true;
+        assert_ne!(show.input_state(), base, "presenter view changes the available area");
+        show.presenter = false;
+
+        show.grid = true;
+        assert_ne!(show.input_state(), base, "See All Slides replaces the slide with thumbnails");
+        show.grid = false;
+
+        show.pen = true;
+        assert_ne!(show.input_state(), base, "the pen changes what a drag means");
+        show.pen = false;
+
+        show.laser = true;
+        assert_ne!(show.input_state(), base, "the laser changes what a drag means");
+        show.laser = false;
+
+        show.zoom_arm = true;
+        assert_ne!(show.input_state(), base, "armed zoom changes what a click means");
+        show.zoom_arm = false;
+
+        show.zoom = Some(Zoom::at(0.25, 0.75));
+        assert_ne!(show.input_state(), base, "a zoomed slide has a different click mapping");
+        show.zoom = None;
+
+        show.blank = Some(Color32::BLACK);
+        assert_ne!(show.input_state(), base, "a blank screen has no slide click targets");
     }
 }

@@ -530,7 +530,7 @@ impl Paragraph {
         true
     }
     pub fn text(&self) -> String {
-        self.runs.iter().map(|r| r.content()).collect()
+        self.runs.iter().map(Run::content).collect()
     }
     pub fn char_len(&self) -> usize {
         self.runs.iter().map(Run::char_len).sum()
@@ -576,7 +576,7 @@ pub struct ListStyle {
 
 impl ListStyle {
     pub fn level(&self, l: u8) -> Option<&LevelStyle> {
-        self.levels.get(l as usize).and_then(|x| x.as_ref())
+        self.levels.get(l as usize).and_then(Option::as_ref)
     }
     pub fn set(&mut self, l: u8, s: LevelStyle) {
         let i = (l as usize).min(8);

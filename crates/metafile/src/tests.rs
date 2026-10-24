@@ -1716,7 +1716,7 @@ fn plus_pic(recs: Vec<Vec<u8>>) -> Picture {
 }
 
 fn u16s(s: &str) -> Vec<u8> {
-    s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 /// A 2 x 2 32bpp ARGB bitmap image object: red, green / blue, white.

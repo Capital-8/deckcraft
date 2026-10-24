@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 use crate::SlideApp;
 use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens};
-use crate::widgets::{self, RIBBON_H, big_button, big_button_ex, color_split, dropdown, group, icon_toggle, rows, small_button, small_button_ex};
+use crate::widgets::{
+    self, RIBBON_H, big_button, big_button_ex, color_split, dropdown, group, icon_toggle, rows, small_button, small_button_ex, small_button_named,
+};
 
 pub const TITLE_H: f32 = 38.0;
 
@@ -58,7 +60,9 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
     egui::Panel::top("title_bar").exact_size(height).frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
         let rect = ui.max_rect();
         // Dragging the empty title bar moves the window.
-        let drag = ui.interact(rect, ui.id().with("titledrag"), Sense::click_and_drag());
+        let drag = ui.interact(rect, ui.scope_id().with("titledrag"), Sense::click_and_drag());
+        // The drag surface is not a button: a full-width Button would be announced as one.
+        drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Window, true, "Window title bar"));
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
@@ -170,8 +174,8 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         {
             let w = ui.fonts_mut(|f| f.layout_no_wrap("File".to_string(), theme::font(13.0), t.text).size().x) + 18.0;
             let r = Rect::from_min_size(pos2(x, y), vec2(w, 24.0));
-            let resp = ui.interact(r, ui.id().with("tab_file"), Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "File"));
+            let resp = ui.interact(r, ui.scope_id().with("tab_file"), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "File"));
             if resp.hovered() {
                 ui.painter().rect_filled(r.shrink2(vec2(2.0, 2.0)), CornerRadius::same(4), t.hover);
             }
@@ -186,7 +190,8 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             let font = theme::font(13.0);
             let w = ui.fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), t.text).size().x) + 18.0;
             let r = Rect::from_min_size(pos2(x, y), vec2(w, 24.0));
-            let resp = ui.interact(r, ui.id().with(("tab", name)), Sense::click());
+            let resp = ui.interact(r, ui.scope_id().with(("tab", name)), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
             let active = app.ui.tab == name;
             if resp.hovered() && !active {
                 ui.painter().rect_filled(r.shrink2(vec2(2.0, 2.0)), CornerRadius::same(4), t.hover);
@@ -219,35 +224,91 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         ui.painter().rect_filled(card.translate(vec2(0.0, 1.0)), CornerRadius::same(10), t.card_border);
         ui.painter().rect_filled(card, CornerRadius::same(10), t.card);
         let inner = Rect::from_min_size(pos2(card.min.x + 10.0, card.min.y + 5.0), vec2(card.width() - 20.0, RIBBON_H));
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         cui.set_clip_rect(inner.expand2(vec2(0.0, 3.0)));
-        cui.spacing_mut().item_spacing.x = 1.0;
-        let ui = &mut cui;
+        // Reserve a gutter on both sides for the overflow chevrons. They are painted and
+        // interacted in that gutter, never on top of the first/last visible button: the bar they
+        // reveal must not steal the click they were meant to make reachable.
+        let edge = 18.0_f32.min(inner.width() * 0.25);
+        let scroll_rect = inner.shrink2(vec2(edge, 0.0));
+        let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(scroll_rect));
+        sui.set_clip_rect(scroll_rect.expand2(vec2(0.0, 3.0)));
         let tab = app.ui.tab.clone();
-        match tab.as_str() {
-            "Home" => home(app, ui),
-            "Insert" => insert(app, ui),
-            "Draw" => draw(app, ui),
-            "Design" => design(app, ui),
-            "Transitions" => transitions(app, ui),
-            "Animations" => animations(app, ui),
-            "Slide Show" => slide_show(app, ui),
-            "Record" => record(app, ui),
-            "Review" => review(app, ui),
-            "View" => view(app, ui),
-            "Shape Format" => shape_format(app, ui),
-            "Picture Format" => picture_format(app, ui),
-            "Table Design" => table_design(app, ui),
-            "Layout" => table_layout(app, ui),
-            "Chart Design" => chart_design(app, ui),
-            "SmartArt Design" => smartart_design(app, ui),
-            "Playback" => playback(app, ui),
-            "Slide Master" => slide_master(app, ui),
-            "Handout Master" => handout_master(app, ui),
-            "Notes Master" => notes_master(app, ui),
-            _ => {}
+        // The card used to clip a too-wide group row with no way to reach the rest. A horizontal
+        // scroll area plus edge chevrons keeps every group reachable at the default 1440 px
+        // window, including Home's Editing group (Replace Fonts…). The bar is hidden; the
+        // chevrons are the visible overflow control and are accessible buttons of their own.
+        let request_id = cui.make_persistent_id(("ribbon_scroll_request", tab.as_str()));
+        let requested = cui.ctx().data_mut(|d| d.remove_temp::<f32>(request_id));
+        let mut area = egui::ScrollArea::horizontal().id_salt(("ribbon_scroll", tab.as_str()));
+        if let Some(offset) = requested {
+            area = area.horizontal_scroll_offset(offset);
+        }
+        let scroll =
+            area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).auto_shrink([false, false]).show(&mut sui, |ui| {
+                ui.set_min_height(RIBBON_H);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    match tab.as_str() {
+                        "Home" => home(app, ui),
+                        "Insert" => insert(app, ui),
+                        "Draw" => draw(app, ui),
+                        "Design" => design(app, ui),
+                        "Transitions" => transitions(app, ui),
+                        "Animations" => animations(app, ui),
+                        "Slide Show" => slide_show(app, ui),
+                        "Record" => record(app, ui),
+                        "Review" => review(app, ui),
+                        "View" => view(app, ui),
+                        "Shape Format" => shape_format(app, ui),
+                        "Picture Format" => picture_format(app, ui),
+                        "Table Design" => table_design(app, ui),
+                        "Layout" => table_layout(app, ui),
+                        "Chart Design" => chart_design(app, ui),
+                        "SmartArt Design" => smartart_design(app, ui),
+                        "Playback" => playback(app, ui),
+                        "Slide Master" => slide_master(app, ui),
+                        "Handout Master" => handout_master(app, ui),
+                        "Notes Master" => notes_master(app, ui),
+                        _ => {}
+                    }
+                });
+            });
+        let r = scroll.inner_rect;
+        let overflow = (scroll.content_size.x - r.width()).max(0.0);
+        let offset = scroll.state.clamped_offset().x;
+        // Record the rendered offset for `InputTarget`: the same window point hits a different
+        // button when the ribbon scrolls between queueing and delivering a control click.
+        app.ribbon_scroll.insert(tab.clone(), offset.to_bits());
+        let step = 160.0;
+        let mut next = None;
+        if offset > 1.0 {
+            let left = Rect::from_min_max(pos2((r.left() - edge).max(inner.left()), r.top()), pos2(r.left(), r.bottom()));
+            if edge_cue(&mut cui, left, "‹", "Scroll ribbon left", &t) {
+                next = Some(offset - step);
+            }
+        }
+        if overflow - offset > 1.0 {
+            let right = Rect::from_min_max(pos2(r.right(), r.top()), pos2((r.right() + edge).min(inner.right()), r.bottom()));
+            if edge_cue(&mut cui, right, "›", "Scroll ribbon right", &t) {
+                next = Some(offset + step);
+            }
+        }
+        if let Some(x) = next {
+            ui.ctx().data_mut(|d| d.insert_temp(request_id, x.clamp(0.0, overflow)));
+            ui.ctx().request_repaint();
         }
     });
+}
+
+/// A chevron over a ribbon edge that scrolls it; `true` on the frame it is clicked.
+fn edge_cue(ui: &mut Ui, rect: Rect, glyph: &str, hint: &str, t: &Tokens) -> bool {
+    let resp = ui.interact(rect, ui.scope_id().with(glyph), Sense::click()).on_hover_text(hint);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, hint));
+    let ink = if resp.hovered() { t.text } else { t.text_dim };
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, t.card);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, egui::FontId::proportional(18.0), ink);
+    resp.clicked()
 }
 
 fn big(app: &mut SlideApp, ui: &mut Ui, icon: Icon, label: &str, id: &str, p: Value) {
@@ -255,7 +316,7 @@ fn big(app: &mut SlideApp, ui: &mut Ui, icon: Icon, label: &str, id: &str, p: Va
     let r = big_button(ui, icon, label, en);
     if id == "insert.dateTime" {
         let name = label.replace('\n', " ");
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, en, &name));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, en, &name));
     }
     let r = r.on_hover_text(tip(id, label));
     if r.clicked() {
@@ -269,10 +330,10 @@ fn photo_album_button(app: &mut SlideApp, ui: &mut Ui) {
     let en = enabled(app, "insert.photoAlbum");
     let (main, arrow) = big_button_ex(ui, Icon::Picture, "Photo\nAlbum", en, true, false);
     let _ = main.clone().on_hover_text(tip("insert.photoAlbum", "Photo Album…"));
-    main.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, en, "Photo Album…"));
+    main.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, en, "Photo Album…"));
     if let Some(a) = &arrow {
         let _ = a.clone().on_hover_text("Photo Album options");
-        a.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, en, "Photo Album options"));
+        a.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, en, "Photo Album options"));
     }
     if main.clicked() {
         run(app, "insert.photoAlbum", json!({}));
@@ -447,18 +508,22 @@ fn slides_group(app: &mut SlideApp, ui: &mut Ui) {
             });
         }
         rows(ui, |ui| {
-            let (r, _) = small_button_ex(ui, Icon::Layout, "Layout", enabled(app, "slide.layout"), false, true);
-            egui::Popup::menu(&r).width(420.0).show(|ui| layout_menu(app, ui, "slide.layout"));
+            let (main, arrow) = small_button_ex(ui, Icon::Layout, "Layout", enabled(app, "slide.layout"), false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_menu(&main, &arrow, |ui| layout_menu(app, ui, "slide.layout"));
+            }
             small(app, ui, Icon::ResetSlide, "Reset", "slide.reset", json!({}));
-            let (r, _) = small_button_ex(ui, Icon::Section, "Section", enabled(app, "section.add"), false, true);
-            egui::Popup::menu(&r).show(|ui| {
-                if ui.button("Add Section").clicked() {
-                    run(app, "section.add", json!({}));
-                }
-                if ui.button("Remove All Sections").clicked() {
-                    run(app, "section.removeAll", json!({}));
-                }
-            });
+            let (main, arrow) = small_button_ex(ui, Icon::Section, "Section", enabled(app, "section.add"), false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_menu(&main, &arrow, |ui| {
+                    if ui.button("Add Section").clicked() {
+                        run(app, "section.add", json!({}));
+                    }
+                    if ui.button("Remove All Sections").clicked() {
+                        run(app, "section.removeAll", json!({}));
+                    }
+                });
+            }
         });
     });
 }
@@ -657,7 +722,7 @@ fn smartart_gallery(
                                 None => ui.add_sized([96.0, 60.0], egui::Button::new("").selected(*k == current)),
                             };
                             ui.add(egui::Label::new(egui::RichText::new(*label).small()).truncate().selectable(false));
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, *label));
                             r.on_hover_text(*label)
                         })
                         .inner;
@@ -692,7 +757,7 @@ fn paragraph_group(app: &mut SlideApp, ui: &mut Ui, st: &Value) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
                 let b = |k: &str| st.get(k).and_then(Value::as_bool).unwrap_or(false);
-                let (m, a) = small_button_ex(ui, Icon::Bullets, "", en, b("bullets"), true);
+                let (m, a) = small_button_named(ui, Icon::Bullets, "", "Bullets", en, b("bullets"), true);
                 if m.on_hover_text("Bullets").clicked() {
                     run(app, "format.bullets", json!({}));
                 }
@@ -714,7 +779,7 @@ fn paragraph_group(app: &mut SlideApp, ui: &mut Ui, st: &Value) {
                         }
                     });
                 }
-                let (m, a) = small_button_ex(ui, Icon::Numbering, "", en, b("numbering"), true);
+                let (m, a) = small_button_named(ui, Icon::Numbering, "", "Numbering", en, b("numbering"), true);
                 if m.on_hover_text("Numbering").clicked() {
                     run(app, "format.numbering", json!({}));
                 }
@@ -949,9 +1014,9 @@ fn drawing_group(app: &mut SlideApp, ui: &mut Ui) {
             if let Some(a) = a {
                 widgets::color_popup(&a).show(|ui| outline_menu(app, ui, &sc));
             }
-            let (_, a) = small_button_ex(ui, Icon::ShapeEffects, "Shape Effects", sel, false, true);
-            if let Some(a) = a {
-                egui::Popup::menu(&a).show(|ui| effects_menu(app, ui));
+            let (main, arrow) = small_button_ex(ui, Icon::ShapeEffects, "Shape Effects", sel, false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_menu(&main, &arrow, |ui| effects_menu(app, ui));
             }
         });
     });
@@ -1321,7 +1386,7 @@ fn insert(app: &mut SlideApp, ui: &mut Ui) {
 /// Hover-to-size table grid. Returns (rows, cols) when clicked.
 pub fn table_grid_picker(ui: &mut Ui) -> Option<(usize, usize)> {
     let t = Tokens::get(ui.ctx());
-    let id = ui.id().with("tgrid");
+    let id = ui.scope_id().with("tgrid");
     let mut hover: (usize, usize) = ui.data_mut(|d| d.get_temp(id).unwrap_or((0, 0)));
     let cell = 16.0;
     let label = if hover.0 > 0 { format!("{}x{} Table", hover.1, hover.0) } else { "Insert Table".into() };
@@ -1349,11 +1414,43 @@ pub fn table_grid_picker(ui: &mut Ui) -> Option<(usize, usize)> {
     if resp.clicked() && hover.0 > 0 { Some(hover) } else { None }
 }
 
+fn render_icon_categories(app: &mut SlideApp, ui: &mut Ui, icons: &[deckcraft_engine::icons::Icon], color: Color32, hover: Color32) {
+    let mut cats: Vec<&str> = Vec::new();
+    for icon in icons {
+        if !cats.contains(&icon.category) {
+            cats.push(icon.category);
+        }
+    }
+    for cat in cats {
+        ui.label(egui::RichText::new(cat).small().strong());
+        ui.horizontal_wrapped(|ui| {
+            for icon in icons.iter().filter(|i| i.category == cat) {
+                icon_cell(app, ui, icon, color, hover);
+            }
+        });
+    }
+}
+
+fn render_filtered_icons(app: &mut SlideApp, ui: &mut Ui, icons: &[deckcraft_engine::icons::Icon], q: &str, color: Color32, hover: Color32) {
+    let mut n = 0;
+    ui.horizontal_wrapped(|ui| {
+        for icon in icons {
+            if icon.name.contains(q) || icon.label.to_lowercase().contains(q) {
+                icon_cell(app, ui, icon, color, hover);
+                n += 1;
+            }
+        }
+    });
+    if n == 0 {
+        ui.label("No icons match.");
+    }
+}
+
 /// Lucide stroke icons (Insert › Icons). Search filters the gallery; a click inserts the outline.
 fn icon_library(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let (color, hover) = (t.text, t.hover);
-    let id = ui.id().with("icon-query");
+    let id = ui.scope_id().with("icon-query");
     let mut query = ui.data_mut(|d| d.get_temp::<String>(id).unwrap_or_default());
     ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search icons").desired_width(ui.available_width()));
     let q = query.trim().to_lowercase();
@@ -1361,33 +1458,9 @@ fn icon_library(app: &mut SlideApp, ui: &mut Ui) {
     let icons = deckcraft_engine::icons::icons();
     egui::ScrollArea::vertical().id_salt("icon-scroll").max_height(420.0).show(ui, |ui| {
         if q.is_empty() {
-            let mut cats: Vec<&str> = Vec::new();
-            for icon in icons {
-                if !cats.contains(&icon.category) {
-                    cats.push(icon.category);
-                }
-            }
-            for cat in cats {
-                ui.label(egui::RichText::new(cat).small().strong());
-                ui.horizontal_wrapped(|ui| {
-                    for icon in icons.iter().filter(|i| i.category == cat) {
-                        icon_cell(app, ui, icon, color, hover);
-                    }
-                });
-            }
+            render_icon_categories(app, ui, icons, color, hover);
         } else {
-            let mut n = 0;
-            ui.horizontal_wrapped(|ui| {
-                for icon in icons {
-                    if icon.name.contains(&q) || icon.label.to_lowercase().contains(&q) {
-                        icon_cell(app, ui, icon, color, hover);
-                        n += 1;
-                    }
-                }
-            });
-            if n == 0 {
-                ui.label("No icons match.");
-            }
+            render_filtered_icons(app, ui, icons, &q, color, hover);
         }
     });
 }
@@ -1537,7 +1610,7 @@ fn design(app: &mut SlideApp, ui: &mut Ui) {
     }
     group(ui, |ui| {
         let r = big_button(ui, Icon::Colors, "Colors", true);
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Colors"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Colors"));
         egui::Popup::menu(&r).width(240.0).show(|ui| {
             for cs in deckcraft_model::theme::builtin_color_schemes() {
                 ui.horizontal(|ui| {
@@ -1564,7 +1637,7 @@ fn design(app: &mut SlideApp, ui: &mut Ui) {
             }
         });
         let r = big_button(ui, Icon::Fonts, "Fonts", true);
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fonts"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Fonts"));
         egui::Popup::menu(&r).width(220.0).show(|ui| {
             for fs in deckcraft_model::theme::builtin_font_schemes() {
                 if ui.button(format!("{}\n   {} / {}", fs.name, fs.major.latin, fs.minor.latin)).clicked() {
@@ -1578,7 +1651,7 @@ fn design(app: &mut SlideApp, ui: &mut Ui) {
             }
         });
         let r = big_button(ui, Icon::ShapeEffects, "Effects", true);
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Effects"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Effects"));
         egui::Popup::menu(&r).width(180.0).show(|ui| {
             for fs in deckcraft_model::theme::builtin_format_schemes() {
                 if ui.button(&fs.name).clicked() {
@@ -1718,14 +1791,14 @@ fn transitions(app: &mut SlideApp, ui: &mut Ui) {
         // Sound in its own column, so the timing column keeps its three rows.
         rows(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Sound:");
+                let field = ui.label("Sound:");
                 let stop = cur.as_ref().is_some_and(|t| t.stop_sound);
                 let name = cur
                     .as_ref()
                     .and_then(|t| t.sound)
                     .and_then(|m| app.session.active().and_then(|d| d.doc.media(m).map(|i| i.name.trim_end_matches(".wav").to_string())))
                     .unwrap_or_else(|| if stop { "[Stop Previous Sound]".into() } else { "[No Sound]".into() });
-                egui::ComboBox::from_id_salt("transition_sound").width(140.0).selected_text(name).show_ui(ui, |ui| {
+                let combo = egui::ComboBox::from_id_salt("transition_sound").width(140.0).selected_text(name).show_ui(ui, |ui| {
                     let none = cur.as_ref().is_none_or(|t| t.sound.is_none() && !t.stop_sound);
                     if ui.selectable_label(none, "[No Sound]").clicked() {
                         run(app, "transition.sound", json!({"none": true}));
@@ -1754,6 +1827,7 @@ fn transitions(app: &mut SlideApp, ui: &mut Ui) {
                         run(app, "transition.sound", json!({"loop": lp}));
                     }
                 });
+                let _ = combo.response.labelled_by(field.id);
             });
         });
         rows(ui, |ui| {
@@ -2472,17 +2546,17 @@ fn shape_format(app: &mut SlideApp, ui: &mut Ui) {
             if let Some(a) = a {
                 widgets::color_popup(&a).show(|ui| outline_menu(app, ui, &sc));
             }
-            let (_, a) = small_button_ex(ui, Icon::ShapeEffects, "Shape Effects", sel, false, true);
-            if let Some(a) = a {
-                egui::Popup::menu(&a).show(|ui| effects_menu(app, ui));
+            let (main, arrow) = small_button_ex(ui, Icon::ShapeEffects, "Shape Effects", sel, false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_menu(&main, &arrow, |ui| effects_menu(app, ui));
             }
         });
     });
     group(ui, |ui| {
         rows(ui, |ui| {
-            let (_, a) = small_button_ex(ui, Icon::TextFill, "Text Fill", sel, false, true);
-            if let Some(a) = a {
-                widgets::color_popup(&a).show(|ui| {
+            let (main, arrow) = small_button_ex(ui, Icon::TextFill, "Text Fill", sel, false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_color_popup(&main, &arrow).show(|ui| {
                     if let Some(Some(c)) = widgets::color_grid(ui, &sc, None) {
                         run(app, "format.color", json!({"color": cref_param(&c)}));
                     }
@@ -2492,9 +2566,9 @@ fn shape_format(app: &mut SlideApp, ui: &mut Ui) {
                     }
                 });
             }
-            let (_, a) = small_button_ex(ui, Icon::TextOutline, "Text Outline", sel, false, true);
-            if let Some(a) = a {
-                widgets::color_popup(&a).show(|ui| {
+            let (main, arrow) = small_button_ex(ui, Icon::TextOutline, "Text Outline", sel, false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_color_popup(&main, &arrow).show(|ui| {
                     if let Some(c) = widgets::color_grid(ui, &sc, Some("No Outline")) {
                         run(app, "format.textOutline", json!({"color": c.map(|c| cref_param(&c))}));
                     }
@@ -2548,17 +2622,23 @@ fn arrange_group(app: &mut SlideApp, ui: &mut Ui) {
         let r = big_button(ui, Icon::AlignObjects, "Align", sel);
         egui::Popup::menu(&r).show(|ui| align_menu(app, ui));
         rows(ui, |ui| {
-            let (_, a) = small_button_ex(ui, Icon::Group, "Group", sel, false, true);
-            if let Some(a) = a {
-                egui::Popup::menu(&a).show(|ui| {
+            let (main, arrow) = small_button_ex(ui, Icon::Group, "Group", sel, false, true);
+            if main.clicked() {
+                run(app, "arrange.group", json!({}));
+            }
+            if let Some(arrow) = arrow {
+                egui::Popup::menu(&arrow).show(|ui| {
                     menu_item(app, ui, Icon::Group, "Group", "arrange.group", json!({}));
                     menu_item(app, ui, Icon::Ungroup, "Ungroup", "arrange.ungroup", json!({}));
                     menu_item(app, ui, Icon::Group, "Regroup", "arrange.regroup", json!({}));
                 });
             }
-            let (_, a) = small_button_ex(ui, Icon::Rotate, "Rotate", sel, false, true);
-            if let Some(a) = a {
-                egui::Popup::menu(&a).show(|ui| {
+            let (main, arrow) = small_button_ex(ui, Icon::Rotate, "Rotate", sel, false, true);
+            if main.clicked() {
+                run(app, "arrange.rotateRight", json!({}));
+            }
+            if let Some(arrow) = arrow {
+                egui::Popup::menu(&arrow).show(|ui| {
                     menu_item(app, ui, Icon::RotateRight, "Rotate Right 90°", "arrange.rotateRight", json!({}));
                     menu_item(app, ui, Icon::RotateLeft, "Rotate Left 90°", "arrange.rotateLeft", json!({}));
                     menu_item(app, ui, Icon::FlipV, "Flip Vertical", "arrange.flipVertical", json!({}));
@@ -2681,9 +2761,12 @@ fn picture_format(app: &mut SlideApp, ui: &mut Ui) {
         rows(ui, |ui| {
             small(app, ui, Icon::ChangePicture, "Change Picture", "app.changePictureDialog", json!({}));
             small(app, ui, Icon::ResetPicture, "Reset Picture", "picture.reset", json!({}));
-            let (_, r) = small_button_ex(ui, Icon::CompressPictures, "Compress Pictures", enabled(app, "picture.compress"), false, true);
-            if let Some(r) = r {
-                egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(260.0).show(|ui| compress_menu(app, ui));
+            let (main, arrow) = small_button_ex(ui, Icon::CompressPictures, "Compress Pictures", enabled(app, "picture.compress"), false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_popup(&main, &arrow)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .width(260.0)
+                    .show(|ui| compress_menu(app, ui));
             }
         });
     });
@@ -3102,21 +3185,23 @@ fn smartart_design(app: &mut SlideApp, ui: &mut Ui) {
             run(app, "view.pane", json!({"pane": "smartart", "toggle": true}));
         }
         rows(ui, |ui| {
-            let (r, _) = small_button_ex(ui, Icon::Plus, "Add Shape", gid.is_some(), false, true);
-            egui::Popup::menu(&r).show(|ui| {
-                for (label, pos) in [
-                    ("Add Shape After", "after"),
-                    ("Add Shape Before", "before"),
-                    ("Add Shape Above", "above"),
-                    ("Add Shape Below", "below"),
-                    ("Add Assistant", "assistant"),
-                ] {
-                    if ui.button(label).clicked() {
-                        let index = if n == 0 { Value::Null } else { json!(at) };
-                        run(app, "smartArt.addNode", json!({"id": gid, "index": index, "position": pos}));
+            let (main, arrow) = small_button_ex(ui, Icon::Plus, "Add Shape", gid.is_some(), false, true);
+            if let Some(arrow) = arrow {
+                widgets::split_menu(&main, &arrow, |ui| {
+                    for (label, pos) in [
+                        ("Add Shape After", "after"),
+                        ("Add Shape Before", "before"),
+                        ("Add Shape Above", "above"),
+                        ("Add Shape Below", "below"),
+                        ("Add Assistant", "assistant"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            let index = if n == 0 { Value::Null } else { json!(at) };
+                            run(app, "smartArt.addNode", json!({"id": gid, "index": index, "position": pos}));
+                        }
                     }
-                }
-            });
+                });
+            }
             if small_button(ui, Icon::DecreaseIndent, "Promote", n > 0, false).clicked() {
                 run(app, "smartArt.promote", json!({"id": gid, "index": at}));
             }
@@ -3133,47 +3218,55 @@ fn smartart_design(app: &mut SlideApp, ui: &mut Ui) {
         }
     });
     group(ui, |ui| {
-        let (r, _) = small_button_ex(ui, Icon::Layout, "Layouts", gid.is_some(), false, true);
+        let (main, arrow) = small_button_ex(ui, Icon::Layout, "Layouts", gid.is_some(), false, true);
         let outline = sel.as_ref().map(|(_, d)| d.nodes.clone());
-        egui::Popup::menu(&r).show(|ui| {
-            smartart_gallery(app, ui, "smartArt.layout", json!({"id": gid}), &kind, &style, &colors, outline.as_deref());
-        });
-        let (r, _) = small_button_ex(ui, Icon::Layout, "Convert", gid.is_some(), false, true);
-        egui::Popup::menu(&r).show(|ui| {
-            if ui.button("Convert to Text").clicked() {
-                run(app, "smartArt.toText", json!({"id": gid}));
-            }
-            if ui.button("Convert to Shapes").clicked() {
-                run(app, "smartArt.toShapes", json!({"id": gid}));
-            }
-        });
+        if let Some(arrow) = arrow {
+            widgets::split_menu(&main, &arrow, |ui| {
+                smartart_gallery(app, ui, "smartArt.layout", json!({"id": gid}), &kind, &style, &colors, outline.as_deref());
+            });
+        }
+        let (main, arrow) = small_button_ex(ui, Icon::Layout, "Convert", gid.is_some(), false, true);
+        if let Some(arrow) = arrow {
+            widgets::split_menu(&main, &arrow, |ui| {
+                if ui.button("Convert to Text").clicked() {
+                    run(app, "smartArt.toText", json!({"id": gid}));
+                }
+                if ui.button("Convert to Shapes").clicked() {
+                    run(app, "smartArt.toShapes", json!({"id": gid}));
+                }
+            });
+        }
     });
     group(ui, |ui| {
-        let (r, _) = small_button_ex(ui, Icon::ChangeChartType, "Change Colors", gid.is_some(), false, true);
-        egui::Popup::menu(&r).show(|ui| {
-            for (k, label) in deckcraft_engine::cmd::smartart::COLORS {
-                if matches!(k, "range23" | "accent1" | "accent1Grad") {
-                    ui.separator();
+        let (main, arrow) = small_button_ex(ui, Icon::ChangeChartType, "Change Colors", gid.is_some(), false, true);
+        if let Some(arrow) = arrow {
+            widgets::split_menu(&main, &arrow, |ui| {
+                for (k, label) in deckcraft_engine::cmd::smartart::COLORS {
+                    if matches!(k, "range23" | "accent1" | "accent1Grad") {
+                        ui.separator();
+                    }
+                    let on = colors == k || (colors.is_empty() && k == "colorful");
+                    if ui.selectable_label(on, label).clicked() {
+                        run(app, "smartArt.colors", json!({"id": gid, "colors": k}));
+                    }
                 }
-                let on = colors == k || (colors.is_empty() && k == "colorful");
-                if ui.selectable_label(on, label).clicked() {
-                    run(app, "smartArt.colors", json!({"id": gid, "colors": k}));
+            });
+        }
+        let (main, arrow) = small_button_ex(ui, Icon::SmartArt, "SmartArt Styles", gid.is_some(), false, true);
+        if let Some(arrow) = arrow {
+            widgets::split_menu(&main, &arrow, |ui| {
+                for (k, label) in deckcraft_engine::cmd::smartart::STYLES {
+                    if k == "polished" {
+                        ui.separator();
+                        ui.label("3-D");
+                    }
+                    let on = style == k || (style.is_empty() && k == "flat");
+                    if ui.selectable_label(on, label).clicked() {
+                        run(app, "smartArt.style", json!({"id": gid, "style": k}));
+                    }
                 }
-            }
-        });
-        let (r, _) = small_button_ex(ui, Icon::SmartArt, "SmartArt Styles", gid.is_some(), false, true);
-        egui::Popup::menu(&r).show(|ui| {
-            for (k, label) in deckcraft_engine::cmd::smartart::STYLES {
-                if k == "polished" {
-                    ui.separator();
-                    ui.label("3-D");
-                }
-                let on = style == k || (style.is_empty() && k == "flat");
-                if ui.selectable_label(on, label).clicked() {
-                    run(app, "smartArt.style", json!({"id": gid, "style": k}));
-                }
-            }
-        });
+            });
+        }
     });
     arrange_group(app, ui);
 }
@@ -3539,16 +3632,16 @@ fn smooth_corners_row(app: &mut SlideApp, ui: &mut egui::Ui) {
     }) else {
         return;
     };
-    let key = egui::Id::new(("deckcraft-smooth-corners", id.0));
+    let key = egui::Id::unique(("deckcraft-smooth-corners", id.0));
     let mut state: (f64, f64) = ui.data(|d| d.get_temp(key)).unwrap_or((radius.unwrap_or(0.0), 0.0));
     if let Some(r) = radius {
         state.0 = r;
     }
     let usable = radius.is_some() || ui.data(|d| d.get_temp::<(f64, f64)>(key)).is_some();
     ui.horizontal(|ui| {
-        ui.label("Smooth Corners");
+        let label = ui.label("Smooth Corners");
         let mut pct = state.1;
-        let resp = ui.add_enabled(usable, egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%").integer());
+        let resp = ui.add_enabled(usable, egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%").integer()).labelled_by(label.id);
         let resp = if usable { resp } else { resp.on_disabled_hover_text("For rectangles and rounded rectangles") };
         if resp.changed() {
             state.1 = pct;
@@ -3565,7 +3658,7 @@ fn smooth_corners_row(app: &mut SlideApp, ui: &mut egui::Ui) {
 /// Insert Zoom dialogs do (a checklist of slides or sections).
 fn zoom_menu(app: &mut SlideApp, ui: &mut Ui) {
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
-    let id = egui::Id::new("insert_zoom_menu");
+    let id = egui::Id::unique("insert_zoom_menu");
     let (mut kind, mut picked): (u8, Vec<usize>) = ui.data_mut(|d| d.get_temp(id).unwrap_or((0, vec![])));
     ui.horizontal(|ui| {
         for (k, label) in [(0u8, "Slide Zoom"), (1, "Section Zoom"), (2, "Summary Zoom")] {
@@ -3622,7 +3715,7 @@ fn zoom_menu(app: &mut SlideApp, ui: &mut Ui) {
 /// Compress Pictures options, as in PowerPoint's dialog: resolution, apply to this picture or
 /// all, delete cropped areas. The choices last for the session.
 fn compress_menu(app: &mut SlideApp, ui: &mut Ui) {
-    let id = egui::Id::new("compress_pictures_opts");
+    let id = egui::Id::unique("compress_pictures_opts");
     let (mut ppi, mut only_selected, mut delete_cropped): (u32, bool, bool) = ui.data_mut(|d| d.get_temp(id).unwrap_or((220, true, true)));
     ui.label(egui::RichText::new("Compression options").strong());
     ui.checkbox(&mut only_selected, "Apply only to this picture");

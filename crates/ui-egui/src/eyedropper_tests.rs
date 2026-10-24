@@ -27,7 +27,7 @@ fn harness() -> Harness<'static, SlideApp> {
 }
 
 fn menu() -> Id {
-    Id::new("test-menu")
+    Id::unique("test-menu")
 }
 
 /// A colour menu asked for the Eyedropper.

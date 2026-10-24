@@ -75,10 +75,13 @@ struct WebShell {
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-        for f in dropped {
-            // Capture the document and slide now. The bytes arrive later, after the user may
-            // have switched slides.
+        self.app.logic(ctx);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Browsers cannot read dropped files synchronously. Consume this pass's drops here, with
+        // fresh input, and capture the document/slide before the asynchronous read finishes.
+        for f in std::mem::take(&mut raw.dropped_files) {
             let id = self.app.begin_external_file("drop");
             let inbox = self.inbox.clone();
             let ctx = ctx.clone();
@@ -97,11 +100,7 @@ impl eframe::App for WebShell {
                 }
             });
         }
-        self.app.logic(ctx);
-    }
-
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+        self.app.raw_input_hook(ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

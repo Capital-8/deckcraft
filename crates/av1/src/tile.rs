@@ -2222,18 +2222,16 @@ fn neg_deinterleave(diff: i32, r: i32, max: i32) -> i32 {
         if diff <= 2 * r {
             if diff & 1 == 1 {
                 return r + ((diff + 1) >> 1);
-            } else {
-                return r - (diff >> 1);
             }
+            return r - (diff >> 1);
         }
         diff
     } else {
         if diff <= 2 * (max - r - 1) {
             if diff & 1 == 1 {
                 return r + ((diff + 1) >> 1);
-            } else {
-                return r - (diff >> 1);
             }
+            return r - (diff >> 1);
         }
         max - (diff + 1)
     }
