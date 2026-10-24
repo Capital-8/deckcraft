@@ -20,7 +20,9 @@ HERE="$ROOT/packaging/linux"
 APP_ID=ai.storyteller.deckcraft
 
 verify_sha256() {
-  printf '%s  %s\n' "$1" "$2" | sha256sum -c -
+  local expected="$1"
+  local file="$2"
+  printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
 }
 
 SKIP_BUILD=0
