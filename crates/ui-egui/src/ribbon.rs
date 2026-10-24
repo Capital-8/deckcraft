@@ -1349,6 +1349,38 @@ pub fn table_grid_picker(ui: &mut Ui) -> Option<(usize, usize)> {
     if resp.clicked() && hover.0 > 0 { Some(hover) } else { None }
 }
 
+fn render_icon_categories(app: &mut SlideApp, ui: &mut Ui, icons: &[deckcraft_engine::icons::Icon], color: Color32, hover: Color32) {
+    let mut cats: Vec<&str> = Vec::new();
+    for icon in icons {
+        if !cats.contains(&icon.category) {
+            cats.push(icon.category);
+        }
+    }
+    for cat in cats {
+        ui.label(egui::RichText::new(cat).small().strong());
+        ui.horizontal_wrapped(|ui| {
+            for icon in icons.iter().filter(|i| i.category == cat) {
+                icon_cell(app, ui, icon, color, hover);
+            }
+        });
+    }
+}
+
+fn render_filtered_icons(app: &mut SlideApp, ui: &mut Ui, icons: &[deckcraft_engine::icons::Icon], q: &str, color: Color32, hover: Color32) {
+    let mut n = 0;
+    ui.horizontal_wrapped(|ui| {
+        for icon in icons {
+            if icon.name.contains(q) || icon.label.to_lowercase().contains(q) {
+                icon_cell(app, ui, icon, color, hover);
+                n += 1;
+            }
+        }
+    });
+    if n == 0 {
+        ui.label("No icons match.");
+    }
+}
+
 /// Lucide stroke icons (Insert › Icons). Search filters the gallery; a click inserts the outline.
 fn icon_library(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
@@ -1361,33 +1393,9 @@ fn icon_library(app: &mut SlideApp, ui: &mut Ui) {
     let icons = deckcraft_engine::icons::icons();
     egui::ScrollArea::vertical().id_salt("icon-scroll").max_height(420.0).show(ui, |ui| {
         if q.is_empty() {
-            let mut cats: Vec<&str> = Vec::new();
-            for icon in icons {
-                if !cats.contains(&icon.category) {
-                    cats.push(icon.category);
-                }
-            }
-            for cat in cats {
-                ui.label(egui::RichText::new(cat).small().strong());
-                ui.horizontal_wrapped(|ui| {
-                    for icon in icons.iter().filter(|i| i.category == cat) {
-                        icon_cell(app, ui, icon, color, hover);
-                    }
-                });
-            }
+            render_icon_categories(app, ui, icons, color, hover);
         } else {
-            let mut n = 0;
-            ui.horizontal_wrapped(|ui| {
-                for icon in icons {
-                    if icon.name.contains(&q) || icon.label.to_lowercase().contains(&q) {
-                        icon_cell(app, ui, icon, color, hover);
-                        n += 1;
-                    }
-                }
-            });
-            if n == 0 {
-                ui.label("No icons match.");
-            }
+            render_filtered_icons(app, ui, icons, &q, color, hover);
         }
     });
 }

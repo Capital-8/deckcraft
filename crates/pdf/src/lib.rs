@@ -131,6 +131,33 @@ pub fn export(pres: &Presentation, opts: &PdfOptions) -> Result<Vec<u8>> {
     write::guard(|| export_inner(pres, opts))
 }
 
+fn plan_pages(pres: &Presentation, opts: &PdfOptions, slides: &[usize], sw: f64, sh: f64) -> Vec<Vec<(usize, Rect)>> {
+    match opts.layout {
+        PageLayout::Slides => slides.iter().map(|&i| vec![(i, Rect::new(0.0, 0.0, sw, sh))]).collect(),
+        PageLayout::Notes => {
+            let b = notes_frames(pres, opts.paper).0;
+            slides.iter().map(|&i| vec![(i, b)]).collect()
+        }
+        PageLayout::Handouts { per_page } => {
+            let boxes = handout_boxes(per_page, opts.paper, sw / sh);
+            slides.chunks(boxes.len()).map(|c| c.iter().zip(&boxes).map(|(i, b)| (*i, *b)).collect()).collect()
+        }
+    }
+}
+
+fn build_outline(pres: &Presentation, pages: &[Vec<(usize, Rect)>]) -> Outline {
+    let mut outline = Outline::new();
+    for (p, v) in pages.iter().enumerate() {
+        for (i, _) in v {
+            let t = pres.slides[*i].title();
+            let t = t.lines().next().unwrap_or("").trim().to_string();
+            let label = if t.is_empty() { format!("Slide {}", i + 1) } else { format!("{}. {t}", i + 1) };
+            outline.push_child(OutlineNode::new(label, XyzDestination::new(p, Point::from_xy(0.0, 0.0))));
+        }
+    }
+    outline
+}
+
 fn export_inner(pres: &Presentation, opts: &PdfOptions) -> Result<Vec<u8>> {
     let slides: Vec<usize> = match &opts.slides {
         Some(v) => v.iter().copied().filter(|i| *i < pres.slides.len()).collect(),
@@ -153,29 +180,10 @@ fn export_inner(pres: &Presentation, opts: &PdfOptions) -> Result<Vec<u8>> {
     let (sw, sh) = (pres.slide_size.width.max(1.0), pres.slide_size.height.max(1.0));
     let mut ex = Exporter { pres, opts, fonts: HashMap::new() };
     // Page plan: per page, the slides on it with their boxes (page points).
-    let pages: Vec<Vec<(usize, Rect)>> = match opts.layout {
-        PageLayout::Slides => slides.iter().map(|&i| vec![(i, Rect::new(0.0, 0.0, sw, sh))]).collect(),
-        PageLayout::Notes => {
-            let b = notes_frames(pres, opts.paper).0;
-            slides.iter().map(|&i| vec![(i, b)]).collect()
-        }
-        PageLayout::Handouts { per_page } => {
-            let boxes = handout_boxes(per_page, opts.paper, sw / sh);
-            slides.chunks(boxes.len()).map(|c| c.iter().zip(&boxes).map(|(i, b)| (*i, *b)).collect()).collect()
-        }
-    };
+    let pages = plan_pages(pres, opts, &slides, sw, sh);
     // Bookmarks and slide → page lookup for internal links.
     let page_of: HashMap<usize, usize> = pages.iter().enumerate().flat_map(|(p, v)| v.iter().map(move |(i, _)| (*i, p))).collect();
-    let mut outline = Outline::new();
-    for (p, v) in pages.iter().enumerate() {
-        for (i, _) in v {
-            let t = pres.slides[*i].title();
-            let t = t.lines().next().unwrap_or("").trim().to_string();
-            let label = if t.is_empty() { format!("Slide {}", i + 1) } else { format!("{}. {t}", i + 1) };
-            outline.push_child(OutlineNode::new(label, XyzDestination::new(p, Point::from_xy(0.0, 0.0))));
-        }
-    }
-    pdf.set_outline(outline);
+    pdf.set_outline(build_outline(pres, &pages));
 
     for v in &pages {
         let (pw, ph) = match opts.layout {

@@ -18,6 +18,7 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 HERE="$ROOT/packaging/linux"
 APP_ID=ai.storyteller.deckcraft
+CHECKSUM_FMT='%s  %s\n'
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
@@ -137,21 +138,21 @@ if has appimage; then
       download="$TOOL.download"
       curl --proto '=https' -fsSL -o "$download" \
         "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
-      printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
+      printf "$CHECKSUM_FMT" "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
       chmod 755 "$download"
       mv "$download" "$TOOL"
     fi
-    printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$TOOL" | sha256sum -c -
+    printf "$CHECKSUM_FMT" "$APPIMAGETOOL_SHA256" "$TOOL" | sha256sum -c -
   fi
   RUNTIME="$CARGO_TARGET_DIR/appimage-runtime-$APPIMAGE_RUNTIME_VERSION-$ARCH"
   if [[ ! -f "$RUNTIME" ]]; then
     download="$RUNTIME.download"
     curl --proto '=https' -fsSL -o "$download" \
       "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME_VERSION/runtime-$ARCH"
-    printf '%s  %s\n' "$APPIMAGE_RUNTIME_SHA256" "$download" | sha256sum -c -
+    printf "$CHECKSUM_FMT" "$APPIMAGE_RUNTIME_SHA256" "$download" | sha256sum -c -
     mv "$download" "$RUNTIME"
   fi
-  printf '%s  %s\n' "$APPIMAGE_RUNTIME_SHA256" "$RUNTIME" | sha256sum -c -
+  printf "$CHECKSUM_FMT" "$APPIMAGE_RUNTIME_SHA256" "$RUNTIME" | sha256sum -c -
   # Absolute, because appimagetool runs in $DIST below (CARGO_TARGET_DIR or APPIMAGETOOL may be
   # relative).
   OUT="$(cd "$DIST" && pwd)/$BASENAME.AppImage"

@@ -1090,7 +1090,7 @@ fn shape_item(
     for g in &glyphs {
         let Some(&h) = char_at_byte.get(&g.cluster) else { continue };
         let Some(cell) = cells.get_mut(h) else { continue };
-        if matches!(cell.ch, '\t' | '\u{b}' | '\n') {
+        if matches!(cell.ch, '\t'..='\u{b}') {
             continue;
         }
         let s = scale_of(cell);
@@ -1738,7 +1738,7 @@ fn tab_segment(cells: &[Cell], i: usize) -> (f64, f64) {
     let mut w = 0.0;
     let mut dec = None;
     for c in cells.iter().skip(i + 1) {
-        if matches!(c.ch, '\t' | '\u{b}' | '\n') {
+        if matches!(c.ch, '\t'..='\u{b}') {
             break;
         }
         if c.ch == '.' && dec.is_none() {
