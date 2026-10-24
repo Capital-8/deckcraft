@@ -1786,9 +1786,11 @@ fn apply_subtotals_and_bars(c: &mut deckcraft_model::chart::Chart, p: &Value, su
     }
     if let Some(b) = p.get("upDownBars").and_then(Value::as_bool) {
         c.up_down_bars = b;
+        c.raw = None;
     }
     if let Some(q) = p.get("quartiles").and_then(Value::as_str) {
         c.inclusive_quartiles = q.eq_ignore_ascii_case("inclusive");
+        c.raw = None;
     }
 }
 

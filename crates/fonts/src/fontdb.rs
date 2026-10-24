@@ -743,7 +743,7 @@ pub fn base_style(style: &str) -> &str {
 }
 
 fn norm(s: &str) -> String {
-    s.chars().filter(char::is_alphanumeric).flat_map(char::to_lowercase).collect()
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
 /// Weight implied by a style name.

@@ -749,8 +749,8 @@ impl Chart {
         let (mut lo, mut hi) = if self.kind.stacked() {
             self.stacked_value_range(n)
         } else {
-            let mut l = 0.0;
-            let mut h = 0.0;
+            let mut l: f64 = 0.0;
+            let mut h: f64 = 0.0;
             for s in &self.series {
                 for v in s.values.iter().flatten() {
                     if v.is_finite() {
