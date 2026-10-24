@@ -3,8 +3,8 @@
 //! construction, fitted to how the shapes look and to what their adjust values mean.
 
 use super::{
-    BezPath, CATALOG, Corner, Dir, FillMode, Geometry, Handle, Pb, Point, Rect, Vec2, corner_rect, fill, fill_eo, fill_only, info, mid_sites, orient,
-    shade, simple, stroke_only, vis,
+    Corner, Dir, FillMode, Geometry, Handle, Pb, Point, Rect, Vec2, corner_rect, fill, fill_eo, fill_only, mid_sites, orient, shade, simple,
+    stroke_only, vis,
 };
 
 /// Builds the presets this module knows; `None` for any other name.
