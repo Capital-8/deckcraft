@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "AutoCorrect Options",
             ["Tools"],
             None,
-            "{on?, twoInitials?, sentenceCaps?, days?, capsLock?, fractions?, ordinals?: bool, add?: [from, to], remove?: from} → the options and the replacement list",
+            "{on?, twoInitials?, sentenceCaps?, days?, capsLock?, fractions?, ordinals?, lists?: bool, add?: [from, to], remove?: from} → the options and the replacement list",
             always,
             autocorrect_options
         ),
@@ -592,6 +592,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         s.select(|_, sel| {
             sel.text = Some(TextSel { notes: true, anchor: end, caret: end, ..Default::default() });
             sel.shapes.clear();
+            sel.cells = None;
         })?;
         return ok();
     }
@@ -622,6 +623,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     s.select(|_, sel| {
         sel.shapes = vec![id];
         sel.text = Some(TextSel { shape: id, anchor: at, caret: at, cell, notes: false, line_end: None });
+        sel.cells = None;
     })?;
     Ok(json!({"id": id, "at": [at.0, at.1]}))
 }
@@ -679,6 +681,8 @@ pub(crate) fn insert_text(s: &mut Session, text: &str, props: Option<RunProps>) 
         c
     })?;
     autocorrect(s, text.chars().count() == 1)?;
+    // AutoCorrect can move the caret: a replaced word, or a list lead it removed.
+    let pos = s.doc()?.selection.text.as_ref().map_or(pos, |t| t.caret);
     Ok(json!({"caret": [pos.0, pos.1]}))
 }
 
@@ -885,6 +889,13 @@ fn autocorrect(s: &mut Session, typing: bool) -> Result<()> {
     if end == 0 || !line.get(end - 1).is_some_and(|c| c.is_whitespace() || ".,;:!?".contains(*c)) {
         return Ok(());
     }
+    if typing && s.prefs.ac_lists {
+        // A lead such as `i.` or `a.` is kept as typed, so the space after it starts its list.
+        let lead: String = line.get(..end).map(|l| l.iter().collect()).unwrap_or_default();
+        if auto_list_style(&lead).is_some() || start_auto_list(s, &t, &line, end)? {
+            return Ok(());
+        }
+    }
     let mut word_end = end - 1;
     let mut start = word_end;
     while start > 0 && line.get(start - 1).is_some_and(|c| !c.is_whitespace()) {
@@ -931,6 +942,83 @@ fn autocorrect(s: &mut Session, typing: bool) -> Result<()> {
     }
     st.revision += 1;
     Ok(())
+}
+
+/// A list AutoFormat started: the text being edited right after it, the typed lead with its
+/// space, the paragraph's own formatting before, and the revision the change left.
+#[derive(Clone, Debug)]
+pub struct AutoList {
+    sel: TextSel,
+    typed: String,
+    props: deckcraft_model::text::ParaProps,
+    revision: u64,
+}
+
+/// The list a paragraph that starts with `lead` and a space or tab becomes, as the command and
+/// parameters that make it: `*` •, `-` or `–` –, `--` or `—` ■, `>` ➢, `<>` ◆, and the numbering
+/// styles `1.`, `1)`, `I.`, `i.`, `A.`, `a.` and `a)`.
+fn auto_list_style(lead: &str) -> Option<(&'static str, Value)> {
+    let bullet = |c: &str| Some(("format.bullets", json!({"on": true, "char": c})));
+    let number = |scheme: &str| Some(("format.numbering", json!({"on": true, "scheme": scheme})));
+    match lead {
+        "*" => bullet("•"),
+        "-" | "–" => bullet("–"),
+        "--" | "—" => bullet("■"),
+        ">" => bullet("➢"),
+        "<>" => bullet("◆"),
+        "1." => number("arabicPeriod"),
+        "1)" => number("arabicParenR"),
+        "I." => number("romanUcPeriod"),
+        "i." => number("romanLcPeriod"),
+        "A." => number("alphaUcPeriod"),
+        "a." => number("alphaLcPeriod"),
+        "a)" => number("alphaLcParenR"),
+        _ => None,
+    }
+}
+
+/// AutoFormat's automatic bulleted and numbered lists: when the caret's paragraph holds only a
+/// list lead (`*`, `1.`…) before the space or tab just typed, the lead and the space are removed
+/// and the paragraph becomes a list paragraph in that style. `false` when nothing changed.
+fn start_auto_list(s: &mut Session, t: &TextSel, line: &[char], end: usize) -> Result<bool> {
+    if t.is_range() || !line.get(end - 1).is_some_and(|c| *c == ' ' || *c == '\t') {
+        return Ok(false);
+    }
+    let lead: String = line.get(..end - 1).map(|l| l.iter().collect()).unwrap_or_default();
+    let Some((id, params)) = auto_list_style(&lead) else { return Ok(false) };
+    let typed: String = line.get(..end).map(|l| l.iter().collect()).unwrap_or_default();
+    let para = t.caret.0;
+    let props = body_of(s.doc()?, t).and_then(|b| b.paragraphs.get(para)).map(|p| p.props.clone()).unwrap_or_default();
+    edit_text(s, |body, tt| {
+        ed::delete(body, (para, 0), (para, end));
+        tt.anchor = (para, 0);
+        tt.caret = (para, 0);
+    })?;
+    s.execute(id, &params)?;
+    let st = s.doc_mut()?;
+    if let Some(sel) = st.selection.text.clone() {
+        st.auto_list = Some(AutoList { sel, typed, props, revision: st.revision });
+    }
+    Ok(true)
+}
+
+/// Backspace right after AutoFormat started a list: the paragraph gets back the typed lead and
+/// space and the formatting it had. `false` when the last change was anything else.
+fn undo_auto_list(s: &mut Session) -> Result<bool> {
+    let st = s.doc_mut()?;
+    let Some(a) = st.auto_list.take() else { return Ok(false) };
+    if a.revision != st.revision || st.selection.text.as_ref() != Some(&a.sel) {
+        return Ok(false);
+    }
+    edit_text(s, |body, t| {
+        if let Some(p) = body.paragraphs.get_mut(a.sel.caret.0) {
+            p.props = a.props.clone();
+        }
+        let c = ed::insert(body, a.sel.caret, &a.typed, None);
+        t.anchor = c;
+        t.caret = c;
+    })?;
+    Ok(true)
 }
 
 /// `word` is a number with the ordinal suffix it takes (1st, 22nd, 103rd, 11th), as AutoFormat
@@ -980,6 +1068,7 @@ fn autocorrect_options(s: &mut Session, p: &Value) -> Result<Value> {
         ("capsLock", &mut pr.ac_caps_lock),
         ("fractions", &mut pr.ac_fractions),
         ("ordinals", &mut pr.ac_ordinals),
+        ("lists", &mut pr.ac_lists),
     ] {
         if let Some(v) = p.get(key).and_then(Value::as_bool) {
             *slot = v;
@@ -1026,7 +1115,7 @@ fn autocorrect_options(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({
         "on": pr.autocorrect, "twoInitials": pr.ac_two_initials, "sentenceCaps": pr.ac_sentence_caps,
         "days": pr.ac_days, "capsLock": pr.ac_caps_lock, "fractions": pr.ac_fractions,
-        "ordinals": pr.ac_ordinals, "entries": list,
+        "ordinals": pr.ac_ordinals, "lists": pr.ac_lists, "entries": list,
     }))
 }
 
@@ -1283,6 +1372,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn delete_dir(s: &mut Session, dir: &str) -> Result<Value> {
+    if dir == "backward" && undo_auto_list(s)? {
+        return ok();
+    }
     let dir = dir.to_string();
     edit_text(s, move |body, t| {
         let (a, b) = t.ordered();
@@ -1356,6 +1448,7 @@ fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     let before_doc = st.doc.clone();
     let before_sel = st.selection.clone();
     let composing = st.composition.is_some();
+    let vertex_kind = s.tool.vertex_kind.clone();
     // Where the deletion before `start` begins decides how the selection moves: within the start
     // paragraph its characters shift; from an earlier paragraph those paragraphs merge, so later
     // paragraph numbers shift too.
@@ -1395,7 +1488,7 @@ fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
             };
         }
     } else {
-        push_undo(s.doc_mut()?, HistoryEntry { label: "Delete Text".into(), doc: before_doc, selection: before_sel });
+        push_undo(s.doc_mut()?, HistoryEntry { label: "Delete Text".into(), doc: before_doc, selection: before_sel, vertex_kind });
     }
     Ok(json!({"deleted": deleted}))
 }
@@ -1635,12 +1728,18 @@ pub(crate) fn format_run(s: &mut Session, f: &(dyn Fn(&mut RunProps) + Send + Sy
     if ids.is_empty() {
         return Err(bad("format", SELECT_TEXT_OR_SHAPE));
     }
+    let cells = st.selection.cells;
     edit_shapes(s, &json!({"ids": ids}), "format", |sh| {
+        let id = sh.id;
         match &mut sh.kind {
             ShapeKind::Table(t) => {
-                for row in &mut t.rows {
-                    for c in &mut row.cells {
-                        ed::format_all(&mut c.text, f);
+                // Only the selected cells, when a range of them is selected.
+                let range = super::table::selected_range(cells, id, t);
+                for (r, row) in t.rows.iter_mut().enumerate() {
+                    for (c, cell) in row.cells.iter_mut().enumerate() {
+                        if super::table::in_range(range, r, c) {
+                            ed::format_all(&mut cell.text, f);
+                        }
                     }
                 }
             }
@@ -1726,12 +1825,17 @@ pub(crate) fn format_para(s: &mut Session, f: &(dyn Fn(&mut deckcraft_model::tex
     if ids.is_empty() {
         return Err(bad("format", SELECT_TEXT_OR_SHAPE));
     }
+    let cells = st.selection.cells;
     edit_shapes(s, &json!({"ids": ids}), "format", |sh| {
+        let id = sh.id;
         match &mut sh.kind {
             ShapeKind::Table(t) => {
-                for row in &mut t.rows {
-                    for c in &mut row.cells {
-                        c.text.paragraphs.iter_mut().for_each(f);
+                let range = super::table::selected_range(cells, id, t);
+                for (r, row) in t.rows.iter_mut().enumerate() {
+                    for (c, cell) in row.cells.iter_mut().enumerate() {
+                        if super::table::in_range(range, r, c) {
+                            cell.text.paragraphs.iter_mut().for_each(f);
+                        }
                     }
                 }
             }

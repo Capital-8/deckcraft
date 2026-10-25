@@ -163,6 +163,8 @@ pub struct HistoryEntry {
     pub label: String,
     pub doc: Arc<Presentation>,
     pub selection: Selection,
+    /// The point type Edit Points remembered with `doc` (`ToolState::vertex_kind`).
+    pub vertex_kind: Option<(ShapeId, usize, usize, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -184,6 +186,8 @@ pub struct Interaction {
     pub label: String,
     pub doc: Arc<Presentation>,
     pub selection: Selection,
+    /// The point type Edit Points remembered when it began.
+    pub vertex_kind: Option<(ShapeId, usize, usize, String)>,
 }
 
 /// Text an input method is composing (#101): its preedit sits in the edited text body, at `start`
@@ -225,6 +229,9 @@ pub struct DocState {
     /// The last Duplicate: where it happened and each original with its copy, so duplicating the
     /// copies again repeats how far they were moved, as in PowerPoint (#966).
     pub last_duplicate: Option<(usize, Target, Vec<(ShapeId, ShapeId)>)>,
+    /// The list AutoFormat just started from a typed `* ` or `1. `, so Backspace right after
+    /// can put the typed text back.
+    pub auto_list: Option<cmd::text::AutoList>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -253,6 +260,7 @@ impl DocState {
             composition: None,
             compare: None,
             last_duplicate: None,
+            auto_list: None,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -328,13 +336,15 @@ pub struct Prefs {
     pub smart_quotes: bool,
     /// AutoCorrect options (Tools ▸ AutoCorrect): fix TWo INitial CApitals, capitalize the first
     /// letter of sentences and the names of days, fix accidental cAPS lOCK, and replace 1/2, 1/4
-    /// and 3/4 with fraction characters; AutoFormat superscripts ordinals (1st) as you type.
+    /// and 3/4 with fraction characters; AutoFormat superscripts ordinals (1st) and starts
+    /// bulleted and numbered lists (`* `, `1. `) as you type.
     pub ac_two_initials: bool,
     pub ac_sentence_caps: bool,
     pub ac_days: bool,
     pub ac_caps_lock: bool,
     pub ac_fractions: bool,
     pub ac_ordinals: bool,
+    pub ac_lists: bool,
     /// Your own "replace … with …" entries; they win over the built-in list.
     pub ac_entries: Vec<(String, String)>,
     /// Built-in entries you deleted.
@@ -360,6 +370,7 @@ impl Default for Prefs {
             ac_caps_lock: true,
             ac_fractions: true,
             ac_ordinals: true,
+            ac_lists: true,
             ac_entries: Vec::new(),
             ac_removed: Vec::new(),
             author: "Presenter".into(),
@@ -560,22 +571,35 @@ impl Session {
         self.active_mut().ok_or(EngineError::NoDocument)
     }
     pub fn set_active(&mut self, i: usize) {
+        let was = self.active().map(|d| d.uid);
         if i < self.docs.len() {
             self.active = Some(i);
         }
+        self.forget_vertex_kind_unless(was);
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
+        let was = self.active().map(|d| d.uid);
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
+        self.forget_vertex_kind_unless(was);
         self.docs.len() - 1
     }
     pub fn close_document(&mut self, i: usize) {
+        let was = self.active().map(|d| d.uid);
         if i < self.docs.len() {
             let d = self.docs.remove(i);
             if let Some(dir) = &self.recovery_dir {
                 recovery::discard(dir, d.uid);
             }
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
+        }
+        self.forget_vertex_kind_unless(was);
+    }
+    /// The point type Edit Points remembers names a shape of the active document, and another
+    /// document can have a shape with the same id: a change of active document forgets it.
+    fn forget_vertex_kind_unless(&mut self, was: Option<u64>) {
+        if self.active().map(|d| d.uid) != was {
+            self.tool.vertex_kind = None;
         }
     }
     pub fn next_untitled(&mut self) -> String {
@@ -602,6 +626,7 @@ impl Session {
             }
         }
         let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
+        let vertex_kind = self.tool.vertex_kind.clone();
         let outer = self.depth == 0;
         self.depth += 1;
         let r = (spec.run)(self, params);
@@ -620,6 +645,9 @@ impl Session {
                     st.selection = sel;
                     st.revision += 1;
                 }
+                if outer {
+                    self.tool.vertex_kind = vertex_kind;
+                }
                 return Err(e);
             }
         };
@@ -633,7 +661,7 @@ impl Session {
             && spec.undoable
             && outer
         {
-            push_undo(st, HistoryEntry { label: spec.label.to_string(), doc: old, selection: sel });
+            push_undo(st, HistoryEntry { label: spec.label.to_string(), doc: old, selection: sel, vertex_kind });
         }
         if spec.journal && outer {
             self.journal.push((id.to_string(), params.clone()));
@@ -667,10 +695,11 @@ impl Session {
     /// This is also how the input method's own commit ends a composition: the platform has
     /// already finished that one, so it must not ask for an interrupt.
     pub fn end_composition(&mut self) {
+        let vertex_kind = self.tool.vertex_kind.clone();
         let Some(st) = self.active_mut() else { return };
         let Some(c) = st.composition.take() else { return };
         if !Arc::ptr_eq(&c.before, &st.doc) {
-            push_undo(st, HistoryEntry { label: "Type Text".into(), doc: c.before, selection: c.before_selection });
+            push_undo(st, HistoryEntry { label: "Type Text".into(), doc: c.before, selection: c.before_selection, vertex_kind });
         }
     }
 

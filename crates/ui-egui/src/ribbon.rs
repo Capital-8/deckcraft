@@ -669,7 +669,27 @@ pub fn cref_param(c: &deckcraft_model::ColorRef) -> Value {
             }
             Value::Object(o)
         }
-        _ => json!("#000000"),
+        deckcraft_model::ColorBase::Preset { name } => {
+            let mut o = serde_json::Map::new();
+            o.insert("preset".into(), json!(name));
+            for m in &c.mods {
+                if let Some(v) = m.value() {
+                    o.insert(m.xml_name().into(), json!(v));
+                }
+            }
+            Value::Object(o)
+        }
+        deckcraft_model::ColorBase::System { name, last } => {
+            let mut o = serde_json::Map::new();
+            o.insert("system".into(), json!(name));
+            o.insert("last".into(), json!(format!("#{}", last.hex())));
+            for m in &c.mods {
+                if let Some(v) = m.value() {
+                    o.insert(m.xml_name().into(), json!(v));
+                }
+            }
+            Value::Object(o)
+        }
     }
 }
 
@@ -831,6 +851,9 @@ fn paragraph_group(app: &mut SlideApp, ui: &mut Ui, st: &Value) {
                         if ui.button(format!("{n} Column{}", if n > 1 { "s" } else { "" })).clicked() {
                             run(app, "format.columns", json!({"count": n, "spacing": 18}));
                         }
+                    }
+                    if ui.button("More Columns…").clicked() {
+                        run(app, "format.columns", json!({}));
                     }
                 });
             });

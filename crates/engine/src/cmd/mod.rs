@@ -371,6 +371,8 @@ pub(crate) fn ok() -> Result<Value> {
 }
 
 /// Parse a colour param: `"#RRGGBB"`, `"accent1"`…, or `{"scheme":"accent2","lumMod":75000}`.
+/// A preset or system colour keeps its base: `{"preset":"red"}`,
+/// `{"system":"windowText","last":"#000000"}`.
 pub(crate) fn color_param(p: &Value, key: &str) -> Option<deckcraft_model::ColorRef> {
     let v = p.get(key)?;
     color_value(v)
@@ -391,6 +393,11 @@ pub(crate) fn color_value(v: &Value) -> Option<deckcraft_model::ColorRef> {
         Value::Object(o) => {
             let mut c = if let Some(s) = o.get("scheme").and_then(Value::as_str) {
                 ColorRef::scheme(deckcraft_color::SchemeSlot::from_xml(s)?)
+            } else if let Some(name) = o.get("preset").and_then(Value::as_str) {
+                ColorRef { base: deckcraft_model::ColorBase::Preset { name: name.to_string() }, mods: vec![] }
+            } else if let Some(name) = o.get("system").and_then(Value::as_str) {
+                let last = deckcraft_color::Rgba::from_hex(o.get("last").and_then(Value::as_str)?)?;
+                ColorRef { base: deckcraft_model::ColorBase::System { name: name.to_string(), last }, mods: vec![] }
             } else {
                 ColorRef::rgb(deckcraft_color::Rgba::from_hex(o.get("rgb").and_then(Value::as_str)?)?)
             };
@@ -638,5 +645,17 @@ mod tests {
         assert!(needs_arguments(export.params));
         assert!(!needs_arguments(save.params));
         assert!(needs_arguments(audio.params));
+    }
+
+    #[test]
+    fn preset_and_system_colors_keep_their_base() {
+        use deckcraft_color::{ColorTransform, Rgba};
+        use deckcraft_model::{ColorBase, ColorRef};
+        use serde_json::json;
+        let preset = color_value(&json!({"preset": "red", "lumMod": 50_000}));
+        assert_eq!(preset, Some(ColorRef { base: ColorBase::Preset { name: "red".into() }, mods: vec![ColorTransform::LumMod(50_000)] }));
+        let system = color_value(&json!({"system": "windowText", "last": "#123456"}));
+        assert_eq!(system, Some(ColorRef { base: ColorBase::System { name: "windowText".into(), last: Rgba::rgb(0x12, 0x34, 0x56) }, mods: vec![] }));
+        assert_eq!(color_value(&json!({"system": "windowText"})), None, "a system color needs its last value");
     }
 }

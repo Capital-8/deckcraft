@@ -156,8 +156,8 @@ fn run(app: &mut SlideApp, id: &str, p: Value) {
 }
 
 /// Percent transparency (0 = opaque) of a solid fill, the same number `shape.fill`'s
-/// `transparency` parameter writes as an alpha transform. Anything else — no fill, a
-/// gradient, a picture, a pattern — is 0, because that command only changes a solid.
+/// `transparency` parameter writes as an alpha transform. Anything else (no fill, a
+/// gradient, a picture, a pattern) is 0.
 fn solid_fill_transparency_percent(fill: Option<&Fill>) -> f32 {
     let Some(Fill::Solid { color }) = fill else {
         return 0.0;
@@ -415,6 +415,9 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                         run(app, "format.columns", json!({"count": n, "spacing": 18}));
                     }
                 }
+                if ui.small_button("Columns…").clicked() {
+                    run(app, "format.columns", json!({}));
+                }
             });
         }
         "picture" => {
@@ -475,15 +478,29 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                     }
                 }
             }
-            color_button(app, ui, "Color", Some("No Fill"), |c| match c {
-                Some(c) => ("shape.fill".into(), json!({"color": cref_param(&c)})),
-                None => ("shape.fill".into(), json!({"none": true})),
-            });
+            // The Color button sets a solid fill, so it shows only for a solid or automatic fill. A
+            // gradient takes its colors from its stops, and a pattern takes them from its Foreground
+            // and Background menus below.
+            if matches!(kind, "solid" | "auto") {
+                color_button(app, ui, "Color", Some("No Fill"), |c| match c {
+                    Some(c) => ("shape.fill".into(), json!({"color": cref_param(&c)})),
+                    None => ("shape.fill".into(), json!({"none": true})),
+                });
+            }
+            // `shape.fill {transparency}` changes a solid fill (an automatic one through its
+            // effective color) and a picture fill; a gradient has a transparency per stop.
+            let transparency = matches!(sh.fill, None | Some(Fill::Solid { .. } | Fill::Picture(_)));
             ui.horizontal(|ui| {
+                if !transparency {
+                    return;
+                }
                 let label = ui.label("Transparency");
                 // Seed from this shape. A shared temp defaulted to 0, so a shape that was
                 // already 40% transparent showed as opaque, and leaving the slider wrote 0.
-                let seed = solid_fill_transparency_percent(sh.fill.as_ref());
+                let seed = match &sh.fill {
+                    Some(Fill::Picture(pf)) => ((1.0 - pf.alpha.unwrap_or(1.0)) * 100.0) as f32,
+                    fill => solid_fill_transparency_percent(fill.as_ref()),
+                };
                 let id = ui.scope_id().with(("ftr", sh.id.0));
                 let mut v: f32 = ui.data_mut(|d| d.get_temp(id).unwrap_or(seed));
                 let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%")).labelled_by(label.id);
@@ -509,6 +526,11 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
                     let ng = deckcraft_model::style::Gradient { rotate_with_shape: rot, ..g.clone() };
                     run(app, "shape.fill", json!({"gradient": crate::fillui::gradient_json(&ng)}));
                 }
+            }
+            if let Some(Fill::Pattern(pt)) = &sh.fill
+                && let Some(np) = crate::fillui::pattern_editor(ui, pt, &scheme(app))
+            {
+                run(app, "shape.fill", json!({"pattern": crate::fillui::pattern_json(&np)}));
             }
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Line").font(theme::bold(13.0)));
@@ -874,25 +896,9 @@ fn background(app: &mut SlideApp, ui: &mut Ui) {
             }
         }
         Some(Fill::Pattern(pt)) => {
-            current = Some(json!({"pattern": {"preset": pt.preset, "fg": cref_param(&pt.fg), "bg": cref_param(&pt.bg)}}));
-            ui.horizontal_wrapped(|ui| {
-                for preset in ["pct5", "pct20", "pct50", "ltHorz", "ltVert", "smGrid", "dkDnDiag", "wave", "dotGrid", "weave"] {
-                    if ui.selectable_label(pt.preset == preset, preset).clicked() {
-                        run(app, "design.background", json!({"pattern": {"preset": preset, "fg": cref_param(&pt.fg), "bg": cref_param(&pt.bg)}}));
-                    }
-                }
-            });
-            for (label, fg) in [("Foreground", true), ("Background", false)] {
-                ui.horizontal(|ui| {
-                    ui.label(label);
-                    let r = widgets::drop_button(ui, "Color", vec2(70.0, 20.0), true);
-                    widgets::color_popup(&r).show(|ui| {
-                        if let Some(Some(c)) = widgets::color_grid(ui, &sc, None) {
-                            let (f, b) = if fg { (c, pt.bg.clone()) } else { (pt.fg.clone(), c) };
-                            run(app, "design.background", json!({"pattern": {"preset": pt.preset, "fg": cref_param(&f), "bg": cref_param(&b)}}));
-                        }
-                    });
-                });
+            current = Some(json!({"pattern": crate::fillui::pattern_json(pt)}));
+            if let Some(np) = crate::fillui::pattern_editor(ui, pt, &sc) {
+                run(app, "design.background", json!({"pattern": crate::fillui::pattern_json(&np)}));
             }
         }
         Some(Fill::Picture(pf)) => {
@@ -1485,6 +1491,10 @@ mod smartart_tests;
 mod background_tests;
 
 #[cfg(test)]
+#[path = "pattern_fill_tests.rs"]
+mod pattern_fill_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1575,6 +1585,88 @@ mod tests {
         assert_eq!(solid_alpha(h.state(), b), Some(50_000));
         let changed: Vec<f64> = slider_values(&h);
         assert!(changed.iter().any(|v| (*v - 50.0).abs() < 0.5), "the changed slider shows 50%, got {changed:?}");
+    }
+
+    /// A blank slide with one selected rectangle, its fill set by `fill` (none for an automatic fill),
+    /// in Format Shape ▸ Fill.
+    fn fill_pane(fill: Option<serde_json::Value>) -> Harness<'static, SlideApp> {
+        let mut s = Session::with_new();
+        s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+        let id = s.execute("shape.insert", &json!({"preset": "rect", "rect": [40.0, 40.0, 120.0, 80.0]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("edit.select", &json!({"ids": [id]})).unwrap();
+        if let Some(p) = fill {
+            s.execute("shape.fill", &p).unwrap();
+        }
+        let mut app = SlideApp::new(s, Services::default());
+        app.ui.pane = Some("format".into());
+        app.ui.format_tab = "fill".into();
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h
+    }
+
+    fn picture_fill(transparency: f64) -> serde_json::Value {
+        let png = deckcraft_render::Image { width: 2, height: 2, pixels: [255, 0, 0, 255].repeat(4) }.to_png();
+        json!({"picture": deckcraft_engine::cmd::base64_encode(&png), "transparency": transparency})
+    }
+
+    /// The "Color" drop buttons in the pane: the fill's, when it shows, and the line's.
+    fn color_buttons(h: &Harness<'_, SlideApp>) -> usize {
+        h.query_all_by_role(egui::accesskit::Role::Button).filter(|n| n.accesskit_node().label().is_some_and(|l| l.trim() == "Color")).count()
+    }
+
+    #[test]
+    fn fill_color_and_transparency_show_only_where_they_change_the_fill() {
+        let gradient = json!({"gradient": {"stops": [[0, "accent1"], [1, "accent2"]], "angle": 90}});
+        for (name, fill, color, transparency) in [
+            ("automatic", None, true, 1),
+            ("solid", Some(json!({"color": "accent2"})), true, 1),
+            ("no fill", Some(json!({"none": true})), false, 0),
+            // The one Transparency row left is the selected gradient stop's.
+            ("gradient", Some(gradient), false, 1),
+            ("picture", Some(picture_fill(0.0)), false, 1),
+        ] {
+            let h = fill_pane(fill);
+            let fill_color = color_buttons(&h) == 2;
+            assert_eq!(fill_color, color, "{name}: fill Color button");
+            // 0.37 gives each slider's numeric entry its own SpinButton with the same name, so count
+            // the sliders themselves: one per visible Transparency row.
+            assert_eq!(
+                h.query_all_by_role_and_label(egui::accesskit::Role::Slider, "Transparency").count(),
+                transparency,
+                "{name}: Transparency rows"
+            );
+        }
+    }
+
+    #[test]
+    fn picture_fill_transparency_slider_shows_the_picture_transparency() {
+        let mut h = fill_pane(Some(picture_fill(0.4)));
+        let alpha = |h: &Harness<'_, SlideApp>| {
+            let doc = h.state().session.active().unwrap();
+            match &doc.selected_shapes()[0].fill {
+                Some(Fill::Picture(pf)) => pf.alpha,
+                other => panic!("expected a picture fill, got {other:?}"),
+            }
+        };
+        let shown = slider_values(&h);
+        assert!(shown.iter().any(|v| (*v - 40.0).abs() < 0.5), "a 40% transparent picture should show 40%, got {shown:?}");
+        // 0.37 exposes the slider's numeric entry as a SpinButton with the same name and excludes
+        // a label that names another control from label queries, so find the painted label itself:
+        // clicking it must leave the picture's transparency alone.
+        let label = h
+            .get_all_by_role(egui::accesskit::Role::Label)
+            .find(|n| n.value().as_deref() == Some("Transparency"))
+            .expect("the Transparency label is there");
+        label.click();
+        h.run_steps(2);
+        assert!(alpha(&h).is_some_and(|a| (a - 0.6).abs() < 1e-9), "{:?}", alpha(&h));
     }
 }
 

@@ -54,6 +54,9 @@ impl Session {
         let has_shapes = self.active().is_some_and(|d| !d.selection.shapes.is_empty());
         let k = key_token(key);
         let k = k.as_str();
+        if matches!(k, "escape" | "esc") && self.cancel_point_drag() {
+            return Ok(json!({"handled": true}));
+        }
         if self.tool.drawing_freeform() && matches!(k, "enter" | "return" | "escape") {
             return self.finish_freeform(false);
         }
@@ -87,6 +90,21 @@ impl Session {
             };
             if let Some(r) = r {
                 r?;
+                return Ok(json!({"handled": true}));
+            }
+        }
+        if !editing && has_shapes && !mods.cmd && mods.shift && !mods.alt {
+            // Shift+arrow grows or shrinks a selected range of table cells.
+            let d = match k {
+                "left" => Some((0, -1)),
+                "right" => Some((0, 1)),
+                "up" => Some((-1, 0)),
+                "down" => Some((1, 0)),
+                _ => None,
+            };
+            if let Some((dr, dc)) = d
+                && crate::cmd::table::extend_selected_cells(self, dr, dc)?
+            {
                 return Ok(json!({"handled": true}));
             }
         }
