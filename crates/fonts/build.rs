@@ -5,9 +5,10 @@
 //! `fonts/simplified-chinese-manifest.txt`; it is optional for ordinary local builds but a required
 //! native input (`CRAFT_FONTS_REQUIRED`) fails without it. Unset, `CRAFT_FONTS` is empty. Web
 //! (wasm32) builds embed only Inter Regular/Bold (or a supported Variable face) and BIZ UDPGothic
-//! Regular, to stay within the web size budget. Required builds also verify those faces survive
-//! exclusion (and, on wasm, the web filter), so a pin without the Latin manifest fails instead of
-//! silently dropping Inter. It only reads the local checkout: no network.
+//! Regular, to stay within the web size budget; native builds also carry BIZ UDPGothic Bold.
+//! Required builds verify the faces they promise survive exclusion (and, on wasm, the web filter),
+//! so a pin without the Latin manifest or the native bold face fails instead of silently dropping
+//! them. It only reads the local checkout: no network.
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -156,20 +157,26 @@ fn manifest(dir: &std::path::Path, manifest: &std::path::Path, wasm: bool) -> Re
 }
 
 /// Required builds must actually carry the faces the platform promises: Inter Regular and Bold
-/// (or one Variable face) and BIZ UDPGothic Regular everywhere, plus LXGW WenKai Lite Regular for
-/// native builds. This runs after exclusion and, on wasm, the web filter, so an absent manifest,
-/// empty/all-excluded rows, a wrong-family row or a partial catalog cannot satisfy the gate.
+/// (or one Variable face) and BIZ UDPGothic Regular everywhere, BIZ UDPGothic Bold natively (the
+/// weight-pair metric test relies on it), plus LXGW WenKai Lite Regular for native builds. This
+/// runs after exclusion and, on wasm, the web filter, so an absent manifest, empty/all-excluded
+/// rows, a wrong-family row or a partial catalog cannot satisfy the gate. Wasm deliberately
+/// embeds only BIZ Regular to stay within the web size budget.
 fn validate_required_faces(faces: &[(String, String)], wasm: bool) -> Result<(), String> {
     let has = |family: &str, style: &str| faces.iter().any(|(f, s)| f == family && s == style);
     let inter = has("Inter", "Variable") || (has("Inter", "Regular") && has("Inter", "Bold"));
-    let biz = has("BIZ UDPGothic", "Regular");
+    let biz_regular = has("BIZ UDPGothic", "Regular");
+    let biz_bold = wasm || has("BIZ UDPGothic", "Bold");
     let chinese = wasm || has("LXGW WenKai Lite", "Regular");
     let mut missing = Vec::new();
     if !inter {
         missing.push("Inter Regular/Bold (or Inter Variable)");
     }
-    if !biz {
+    if !biz_regular {
         missing.push("BIZ UDPGothic Regular");
+    }
+    if !biz_bold {
+        missing.push("BIZ UDPGothic Bold");
     }
     if !chinese {
         missing.push("LXGW WenKai Lite Regular");
@@ -199,7 +206,8 @@ mod tests {
             std::fs::write(path.join("fonts/fixture.ttf"), b"build-input path fixture").unwrap();
             std::fs::write(
                 path.join("fonts/manifest.txt"),
-                "BIZ UDPGothic | Regular | fonts/fixture.ttf | Jpan,Latn | OFL-1.1 | OFL.txt | fixture | https://example.invalid\n",
+                "BIZ UDPGothic | Regular | fonts/fixture.ttf | Jpan,Latn | OFL-1.1 | OFL.txt | fixture | https://example.invalid\n\
+                 BIZ UDPGothic | Bold | fonts/fixture.ttf | Jpan,Latn | OFL-1.1 | OFL.txt | fixture | https://example.invalid\n",
             )
             .unwrap();
             Self(path)
@@ -355,7 +363,7 @@ mod tests {
         fixture.latin(include_str!("tests/fixtures/latin-families.txt"));
         fixture.optional(CHINESE_ROW);
         let native = input_fonts(Some(&fixture.0), false, true).unwrap();
-        assert_eq!(native.matches("CraftFont {").count(), 45, "43 permitted Latin faces plus BIZ and LXGW");
+        assert_eq!(native.matches("CraftFont {").count(), 46, "43 permitted Latin faces plus BIZ Regular/Bold and LXGW");
         for family in [
             "Carlito",
             "Caladea",
@@ -424,8 +432,26 @@ mod tests {
         for wasm in [true, false] {
             let e = input_fonts(Some(&fixture.0), wasm, true).unwrap_err();
             assert!(e.contains("BIZ UDPGothic Regular"), "wasm={wasm}: {e}");
+            if !wasm {
+                assert!(e.contains("BIZ UDPGothic Bold"), "native builds need the weight pair: {e}");
+            }
             assert!(input_fonts(Some(&fixture.0), wasm, false).is_ok(), "optional builds still work");
         }
+    }
+
+    /// Native required builds need the real BIZ Bold face for weight metrics; wasm deliberately
+    /// embeds only Regular to stay within its size budget. This pins the contract the engine's
+    /// required-build metric pair assertion relies on.
+    #[test]
+    fn required_native_builds_need_biz_bold_but_wasm_does_not() {
+        let fixture = InputFixture::new();
+        fixture.valid_latin();
+        fixture.optional(CHINESE_ROW);
+        fixture.main("BIZ UDPGothic | Regular | fonts/fixture.ttf | Jpan,Latn | OFL-1.1 | OFL.txt | fixture | https://example.invalid\n");
+        let e = input_fonts(Some(&fixture.0), false, true).unwrap_err();
+        assert!(e.contains("BIZ UDPGothic Bold"), "required native build accepted a Regular-only catalog: {e}");
+        let web = input_fonts(Some(&fixture.0), true, true).unwrap();
+        assert_eq!(web.matches("CraftFont {").count(), 3, "wasm keeps Inter Regular/Bold and BIZ Regular only");
     }
 
     #[test]

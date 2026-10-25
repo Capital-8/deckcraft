@@ -278,7 +278,7 @@ fn pick_album_picture(app: &mut SlideApp) -> Option<Value> {
     Some(json!({"name": name, "data": deckcraft_engine::cmd::base64_encode(&loaded)}))
 }
 
-fn album_choice(ui: &mut Ui, d: &mut Dialog, id: &str, key: &str, default: &str, choices: &[(&str, &str)]) {
+fn album_choice(ui: &mut Ui, d: &mut Dialog, id: &str, name: &str, key: &str, default: &str, choices: &[(&str, &str)]) {
     let cur = d.get(key, default);
     let label = choices.iter().find(|(k, _)| *k == cur).map(|(_, l)| *l).unwrap_or(default);
     let opened = egui::ComboBox::from_id_salt(id).selected_text(label).width(220.0).show_ui(ui, |ui| {
@@ -288,7 +288,13 @@ fn album_choice(ui: &mut Ui, d: &mut Dialog, id: &str, key: &str, default: &str,
             }
         }
     });
-    opened.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, label));
+    let access = name.to_string();
+    let shown = label.to_string();
+    opened.response.widget_info(move || {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, access.clone());
+        info.current_text_value = Some(shown.clone());
+        info
+    });
 }
 
 const ALBUM_THEMES: &[&str] = &["DeckCraft", "Harbor", "Ember", "Meadow", "Nocturne", "Paper", "Coral Reef", "Slate"];
@@ -458,6 +464,7 @@ fn photo_album_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             ui,
             d,
             "album_layout",
+            "Picture layout",
             "layout",
             "1",
             &[
@@ -475,6 +482,7 @@ fn photo_album_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             ui,
             d,
             "album_frame",
+            "Frame shape",
             "frame",
             "rect",
             &[("none", "None"), ("rect", "Rectangle"), ("rounded", "Rounded"), ("simple", "Simple, white")],
@@ -482,7 +490,7 @@ fn photo_album_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         check(ui, d, "Captions under pictures", "captions", false);
         check(ui, d, "ALL pictures black and white", "grayscale", false);
         ui.label("Album theme");
-        album_choice(ui, d, "album_theme", "theme", "DeckCraft", &ALBUM_THEMES.iter().map(|n| (*n, *n)).collect::<Vec<_>>());
+        album_choice(ui, d, "album_theme", "Album theme", "theme", "DeckCraft", &ALBUM_THEMES.iter().map(|n| (*n, *n)).collect::<Vec<_>>());
     });
     let captions = d.fields.get("captions").is_some_and(|v| v == "1");
     let grayscale = d.fields.get("grayscale").is_some_and(|v| v == "1");
@@ -2279,7 +2287,7 @@ fn body(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             let r = ui.add(egui::Slider::new(&mut scale, 0.75..=1.75));
             // No visible label here (the row is laid out to fit); the accessible name only.
             let enabled = r.enabled();
-            r.widget_info(|| egui::WidgetInfo::slider(enabled, scale as f64, "Interface size"));
+            r.widget_info(|| egui::WidgetInfo::slider(enabled, f64::from(scale), "Interface size"));
             if r.is_pointer_button_down_on() {
                 if r.changed() || pending.is_some() {
                     d.fields.insert("uiScale".into(), scale.to_string());
@@ -2622,7 +2630,12 @@ fn date_time_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 }
             }
         });
-        opened.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, lang_label));
+        let shown = lang_label.to_string();
+        opened.response.widget_info(move || {
+            let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Language");
+            info.current_text_value = Some(shown.clone());
+            info
+        });
     });
     ui.label(
         egui::RichText::new("Month names and AM/PM are listed for English. Other languages list the numeric date and 24-hour time.")

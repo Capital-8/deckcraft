@@ -488,24 +488,7 @@ fn slides_group(app: &mut SlideApp, ui: &mut Ui) {
             run(app, "slide.new", json!({}));
         }
         if let Some(a) = arrow {
-            egui::Popup::menu(&a).width(420.0).show(|ui| {
-                layout_menu(app, ui, "slide.new");
-                ui.separator();
-                if ui.button("Duplicate Selected Slides").clicked() {
-                    run(app, "slide.duplicate", json!({}));
-                }
-                if ui.button("Slides from Outline…").clicked() {
-                    app.dialog = Some(crate::dialogs::Dialog::new("outline"));
-                }
-                let desktop = app.services.pick_open.is_some();
-                for (label, keep) in [("Reuse Slides…", false), ("Reuse Slides (Keep Source Formatting)…", true)] {
-                    let r = ui.add_enabled(desktop, egui::Button::new(label));
-                    if r.clicked() {
-                        run(app, "app.reuseSlidesDialog", json!({"keepFormatting": keep}));
-                    }
-                    r.on_disabled_hover_text("Choosing a presentation to reuse needs the desktop app");
-                }
-            });
+            egui::Popup::menu(&a).width(420.0).show(|ui| new_slide_menu(app, ui));
         }
         rows(ui, |ui| {
             let (main, arrow) = small_button_ex(ui, Icon::Layout, "Layout", enabled(app, "slide.layout"), false, true);
@@ -515,17 +498,40 @@ fn slides_group(app: &mut SlideApp, ui: &mut Ui) {
             small(app, ui, Icon::ResetSlide, "Reset", "slide.reset", json!({}));
             let (main, arrow) = small_button_ex(ui, Icon::Section, "Section", enabled(app, "section.add"), false, true);
             if let Some(arrow) = arrow {
-                widgets::split_menu(&main, &arrow, |ui| {
-                    if ui.button("Add Section").clicked() {
-                        run(app, "section.add", json!({}));
-                    }
-                    if ui.button("Remove All Sections").clicked() {
-                        run(app, "section.removeAll", json!({}));
-                    }
-                });
+                widgets::split_menu(&main, &arrow, |ui| section_menu(app, ui));
             }
         });
     });
+}
+
+/// The New Slide button's menu: layouts, duplication, outline import and slide reuse.
+fn new_slide_menu(app: &mut SlideApp, ui: &mut Ui) {
+    layout_menu(app, ui, "slide.new");
+    ui.separator();
+    if ui.button("Duplicate Selected Slides").clicked() {
+        run(app, "slide.duplicate", json!({}));
+    }
+    if ui.button("Slides from Outline…").clicked() {
+        app.dialog = Some(crate::dialogs::Dialog::new("outline"));
+    }
+    let desktop = app.services.pick_open.is_some();
+    for (label, keep) in [("Reuse Slides…", false), ("Reuse Slides (Keep Source Formatting)…", true)] {
+        let r = ui.add_enabled(desktop, egui::Button::new(label));
+        if r.clicked() {
+            run(app, "app.reuseSlidesDialog", json!({"keepFormatting": keep}));
+        }
+        r.on_disabled_hover_text("Choosing a presentation to reuse needs the desktop app");
+    }
+}
+
+/// The Section split button's menu.
+fn section_menu(app: &mut SlideApp, ui: &mut Ui) {
+    if ui.button("Add Section").clicked() {
+        run(app, "section.add", json!({}));
+    }
+    if ui.button("Remove All Sections").clicked() {
+        run(app, "section.removeAll", json!({}));
+    }
 }
 
 pub fn font_families(app: &SlideApp) -> Vec<String> {
@@ -1857,7 +1863,7 @@ fn transitions(app: &mut SlideApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.label("Duration:");
                 let d = cur.as_ref().map(|t| t.duration_ms as f64 / 1000.0).unwrap_or(1.0);
-                if let Some(v) = widgets::spinner(ui, "tdur", d, 0.25, "", 46.0) {
+                if let Some(v) = widgets::spinner(ui, "tdur", "Duration", d, 0.25, "", 46.0) {
                     run(app, "transition.timing", json!({"duration": (v.max(0.0) * 1000.0).round() as u64}));
                 }
             });
@@ -1873,7 +1879,7 @@ fn transitions(app: &mut SlideApp, ui: &mut Ui) {
                 if ui.checkbox(&mut on, "After:").changed() {
                     run(app, "transition.timing", json!({"after": if on { json!(after.unwrap_or(0)) } else { Value::Null }}));
                 }
-                if let Some(v) = widgets::spinner(ui, "tafter", after.unwrap_or(0) as f64 / 1000.0, 1.0, "", 46.0) {
+                if let Some(v) = widgets::spinner(ui, "tafter", "After", after.unwrap_or(0) as f64 / 1000.0, 1.0, "", 46.0) {
                     run(app, "transition.timing", json!({"after": (v.max(0.0) * 1000.0).round() as u64}));
                 }
             });
@@ -2142,13 +2148,17 @@ fn animations(app: &mut SlideApp, ui: &mut Ui) {
             });
             ui.horizontal(|ui| {
                 ui.label("Duration:");
-                if let Some(v) = widgets::spinner(ui, "adur", cur.as_ref().map(|c| c.duration_ms as f64 / 1000.0).unwrap_or(0.5), 0.25, "", 46.0) {
+                if let Some(v) =
+                    widgets::spinner(ui, "adur", "Duration", cur.as_ref().map(|c| c.duration_ms as f64 / 1000.0).unwrap_or(0.5), 0.25, "", 46.0)
+                {
                     run(app, "animation.timing", json!({"duration": (v.max(0.0) * 1000.0).round() as u64}));
                 }
             });
             ui.horizontal(|ui| {
                 ui.label("Delay:");
-                if let Some(v) = widgets::spinner(ui, "adelay", cur.as_ref().map(|c| c.delay_ms as f64 / 1000.0).unwrap_or(0.0), 0.25, "", 46.0) {
+                if let Some(v) =
+                    widgets::spinner(ui, "adelay", "Delay", cur.as_ref().map(|c| c.delay_ms as f64 / 1000.0).unwrap_or(0.0), 0.25, "", 46.0)
+                {
                     run(app, "animation.timing", json!({"delay": (v.max(0.0) * 1000.0).round() as u64}));
                 }
             });
@@ -2686,13 +2696,13 @@ fn size_group(app: &mut SlideApp, ui: &mut Ui) {
             };
             ui.horizontal(|ui| {
                 ui.label("Height:");
-                if let Some(v) = widgets::spinner(ui, "sh", x.h / 72.0, 0.1, "\"", 54.0) {
+                if let Some(v) = widgets::spinner(ui, "sh", "Height", x.h / 72.0, 0.1, "\"", 54.0) {
                     run(app, "shape.resize", json!({"h": v.max(0.0) * 72.0}));
                 }
             });
             ui.horizontal(|ui| {
                 ui.label("Width: ");
-                if let Some(v) = widgets::spinner(ui, "sw", x.w / 72.0, 0.1, "\"", 54.0) {
+                if let Some(v) = widgets::spinner(ui, "sw", "Width", x.w / 72.0, 0.1, "\"", 54.0) {
                     run(app, "shape.resize", json!({"w": v.max(0.0) * 72.0}));
                 }
             });

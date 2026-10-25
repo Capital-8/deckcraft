@@ -2467,52 +2467,7 @@ impl SlideApp {
         let owner = target.map(|t| t.owner);
         let accepted =
             matches!(e, egui::ImeEvent::Commit(_) | egui::ImeEvent::DeleteSurrounding { .. } | egui::ImeEvent::DeleteSurroundingBytes { .. });
-        // A commit or deletion belongs to the composition that began the pre-edit: another owner
-        // (the user clicked elsewhere) or a composition the app already settled makes it stale.
-        // While the reset is still pending, the tombstone rejects pre-edits too (the platform has
-        // not yet been told to cancel its copy). `observe_ime` retires the tombstone in the pass
-        // that publishes the interrupt (or in an accepted no-descriptor pass, which resets the
-        // backend just the same), so a later commit-only is not lost forever: it is a
-        // legitimate direct commit or a new platform composition. egui's events carry no
-        // generation, so an event queued by the OS across that reset is indistinguishable from
-        // one the user just typed; only events in the same input batch as the settle are rejected
-        // deterministically. A cleared-preedit terminal is a distinct case: its pending owner
-        // remains guarded across that output boundary until its actual commit/enable/disable
-        // arrives. Publishing a reset is not evidence that the separately queued terminal was
-        // delivered. With no incoming event epoch, the first ambiguous new composition after an
-        // unobserved reset may be rejected; no timer guesses that it became safe.
-        // The tombstone is not filtered by the *current* target: a click can change the owner in
-        // the settling pass, and every remaining event of that batch still belongs to the
-        // pre-reset composition. Filtering would let the event after the first dropped pre-edit
-        // start composing in the new target before the platform is reset.
-        let cancelled = self.ime_cancelled;
-        let pending_cancelled = self.ime_terminal_pending.as_ref().is_some_and(|p| p.cancelled);
-        #[allow(deprecated)]
-        let stale = !matches!(e, egui::ImeEvent::Disabled | egui::ImeEvent::Enabled)
-            && (self.ime_composition.is_some_and(|c| c.settled || Some(c.owner) != owner) || cancelled.is_some() || pending_cancelled);
-        if stale {
-            if pending_cancelled && matches!(e, egui::ImeEvent::Commit(_)) {
-                // The old terminal finally arrived: reject it and release its pending owner now,
-                // so a new preedit later in this same raw batch can belong to the current target.
-                self.ime_terminal_pending = None;
-                self.ime_composition = None;
-                self.ime_cancelled = None;
-                self.ime_interrupt_pending = false;
-                return;
-            }
-            if pending_cancelled {
-                // note_settled_composition already queued the reset. Do not also latch the
-                // frame's memory interrupt: a terminal later in this batch can consume it and
-                // permit a fresh preedit without resetting that new composition at pass end.
-                self.ime_composition = None;
-                return;
-            }
-            if let Some(c) = cancelled {
-                log::debug!("IGNORING IME event for settled composition owner {:?} generation {}", c.owner, c.generation);
-            }
-            self.ime_composition = None;
-            // Ask the backend to drop its copy, so this is one stale event and not a stream.
-            ctx.memory_mut(|m| m.interrupt_ime());
+        if self.reject_stale_ime_event(ctx, e, owner) {
             return;
         }
         // Until the exact newest reset request completes at its ordered stream position, custom
@@ -2523,7 +2478,82 @@ impl SlideApp {
             return;
         }
         let before = if accepted { self.ime_receipt_stamp() } else { None };
-        let r = match e {
+        let r = self.apply_ime_event(e);
+        self.settle_ime_event_state(e, owner, r.is_ok());
+        if r.is_ok() && accepted {
+            self.refresh_ime_terminal_selection();
+        }
+        if let Err(e) = &r {
+            self.set_status(e.to_string());
+        } else if accepted
+            && let (Some(target), Some(before), Some(after)) = (target, before, self.ime_receipt_stamp())
+            && before != after
+            && r.as_ref().is_ok_and(|v| !v.is_null() && v.get("handled").and_then(Value::as_bool) != Some(false))
+        {
+            // A no-op receipt (an empty commit, a zero-length delete, same text reinserted) is
+            // not a mutation and must not poison the frame for a real commit later in the batch.
+            self.ime_tracker.note_input_method_apply(viewport, frame, target, before, after);
+        }
+    }
+
+    /// Drop an event that belongs to a composition the application already settled, or to another
+    /// owner; returns `true` when the event must not be applied.
+    ///
+    /// A commit or deletion belongs to the composition that began the pre-edit: another owner
+    /// (the user clicked elsewhere) or a composition the app already settled makes it stale.
+    /// While the reset is still pending, the tombstone rejects pre-edits too (the platform has
+    /// not yet been told to cancel its copy). `observe_ime` retires the tombstone in the pass
+    /// that publishes the interrupt (or in an accepted no-descriptor pass, which resets the
+    /// backend just the same), so a later commit-only is not lost forever: it is a
+    /// legitimate direct commit or a new platform composition. egui's events carry no
+    /// generation, so an event queued by the OS across that reset is indistinguishable from
+    /// one the user just typed; only events in the same input batch as the settle are rejected
+    /// deterministically. A cleared-preedit terminal is a distinct case: its pending owner
+    /// remains guarded across that output boundary until its actual commit/enable/disable
+    /// arrives. Publishing a reset is not evidence that the separately queued terminal was
+    /// delivered. With no incoming event epoch, the first ambiguous new composition after an
+    /// unobserved reset may be rejected; no timer guesses that it became safe.
+    /// The tombstone is not filtered by the *current* target: a click can change the owner in
+    /// the settling pass, and every remaining event of that batch still belongs to the
+    /// pre-reset composition. Filtering would let the event after the first dropped pre-edit
+    /// start composing in the new target before the platform is reset.
+    fn reject_stale_ime_event(&mut self, ctx: &egui::Context, e: &egui::ImeEvent, owner: Option<egui::Id>) -> bool {
+        let cancelled = self.ime_cancelled;
+        let pending_cancelled = self.ime_terminal_pending.as_ref().is_some_and(|p| p.cancelled);
+        #[allow(deprecated)]
+        let stale = !matches!(e, egui::ImeEvent::Disabled | egui::ImeEvent::Enabled)
+            && (self.ime_composition.is_some_and(|c| c.settled || Some(c.owner) != owner) || cancelled.is_some() || pending_cancelled);
+        if !stale {
+            return false;
+        }
+        if pending_cancelled && matches!(e, egui::ImeEvent::Commit(_)) {
+            // The old terminal finally arrived: reject it and release its pending owner now,
+            // so a new preedit later in this same raw batch can belong to the current target.
+            self.ime_terminal_pending = None;
+            self.ime_composition = None;
+            self.ime_cancelled = None;
+            self.ime_interrupt_pending = false;
+            return true;
+        }
+        if pending_cancelled {
+            // note_settled_composition already queued the reset. Do not also latch the
+            // frame's memory interrupt: a terminal later in this batch can consume it and
+            // permit a fresh preedit without resetting that new composition at pass end.
+            self.ime_composition = None;
+            return true;
+        }
+        if let Some(c) = cancelled {
+            log::debug!("IGNORING IME event for settled composition owner {:?} generation {}", c.owner, c.generation);
+        }
+        self.ime_composition = None;
+        // Ask the backend to drop its copy, so this is one stale event and not a stream.
+        ctx.memory_mut(|m| m.interrupt_ime());
+        true
+    }
+
+    /// Apply the document mutation an IME event asks for, before any receipt or tracker state.
+    fn apply_ime_event(&mut self, e: &egui::ImeEvent) -> deckcraft_engine::Result<Value> {
+        match e {
             egui::ImeEvent::Preedit { text, active_range_chars } => {
                 self.session.compose_text(text, active_range_chars.as_ref().map(|r| (r.start, r.end)))
             }
@@ -2557,7 +2587,12 @@ impl SlideApp {
                 self.session.end_composition();
                 Ok(Value::Null)
             }
-        };
+        }
+    }
+
+    /// Update the tracked composition after `e` has been applied; `applied` says whether the
+    /// document mutation succeeded.
+    fn settle_ime_event_state(&mut self, e: &egui::ImeEvent, owner: Option<egui::Id>, applied: bool) {
         match e {
             // The platform ends its composition on a commit (and on Disabled/Enabled): nothing is
             // left to interrupt. A pre-edit keeps (or starts) the tracked composition.
@@ -2577,7 +2612,7 @@ impl SlideApp {
                 self.ime_interrupt_pending = false;
             }
             egui::ImeEvent::Preedit { text, .. } => {
-                match (owner, r.is_ok(), self.session.active().is_some_and(|d| d.composition.is_some())) {
+                match (owner, applied, self.session.active().is_some_and(|d| d.composition.is_some())) {
                     (Some(owner), true, true) => {
                         // Updating the same composition keeps its generation. After a settle (or
                         // a first pre-edit) this is a new generation and clears the tombstone.
@@ -2617,20 +2652,6 @@ impl SlideApp {
                 }
             }
             _ => {}
-        }
-        if r.is_ok() && accepted {
-            self.refresh_ime_terminal_selection();
-        }
-        if let Err(e) = &r {
-            self.set_status(e.to_string());
-        } else if accepted
-            && let (Some(target), Some(before), Some(after)) = (target, before, self.ime_receipt_stamp())
-            && before != after
-            && r.as_ref().is_ok_and(|v| !v.is_null() && v.get("handled").and_then(Value::as_bool) != Some(false))
-        {
-            // A no-op receipt (an empty commit, a zero-length delete, same text reinserted) is
-            // not a mutation and must not poison the frame for a real commit later in the batch.
-            self.ime_tracker.note_input_method_apply(viewport, frame, target, before, after);
         }
     }
 

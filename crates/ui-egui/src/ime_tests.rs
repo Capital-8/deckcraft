@@ -377,6 +377,15 @@ fn system_has(s: &str) -> bool {
     s.chars().filter(|c| !c.is_whitespace()).all(|c| deckcraft_fonts::FontDb::global().fallback_for(c, u32::MAX).is_some_and(|f| !f.is_color()))
 }
 
+/// Assert that both interface faces draw every non-space character of `text`; `painted` describes
+/// the sample in a failure message.
+fn assert_faces_draw(h: &egui_kittest::Harness<'_, SlideApp>, text: &str, painted: &str) {
+    for family in [FontId::proportional(13.0), crate::theme::bold(13.0)] {
+        let missing: String = text.chars().filter(|c| !c.is_whitespace() && !h.ctx.fonts_mut(|f| f.has_glyph(&family, *c))).collect();
+        assert!(missing.is_empty(), "{family:?} draws {missing:?} of {painted} as boxes");
+    }
+}
+
 /// #101: a Korean file name, title, notes and comments, a Japanese slide and a Chinese section are
 /// drawn with glyphs in the interface (title bar, outline, notes pane, comments), not boxes: faces
 /// that draw them are borrowed from the font database. A Latin presentation borrows nothing.
@@ -419,10 +428,7 @@ fn cjk_text_in_the_interface_is_drawn_with_real_glyphs() {
             .collect();
         assert_eq!(initial, [chinese.to_owned(), japanese.to_owned()]);
         for text in [chinese, japanese] {
-            for family in [FontId::proportional(13.0), crate::theme::bold(13.0)] {
-                let missing: String = text.chars().filter(|c| !c.is_whitespace() && !h.ctx.fonts_mut(|f| f.has_glyph(&family, *c))).collect();
-                assert!(missing.is_empty(), "{family:?} draws {missing:?} of initially painted {text:?} as boxes");
-            }
+            assert_faces_draw(&h, text, &format!("initially painted {text:?}"));
         }
     } else {
         eprintln!("optional font input: initial CJK paint skipped before layout (no complete local coverage)");
@@ -455,10 +461,7 @@ fn cjk_text_in_the_interface_is_drawn_with_real_glyphs() {
             eprintln!("skipped {text:?}: no font on this machine draws it");
             continue;
         }
-        for family in [FontId::proportional(13.0), crate::theme::bold(13.0)] {
-            let missing: String = text.chars().filter(|c| !c.is_whitespace() && !h.ctx.fonts_mut(|f| f.has_glyph(&family, *c))).collect();
-            assert!(missing.is_empty(), "{family:?} draws {missing:?} of {text:?} as boxes");
-        }
+        assert_faces_draw(&h, text, &format!("{text:?}"));
         checked += 1;
     }
     if require_all || cfg!(windows) || cfg!(target_os = "macos") {

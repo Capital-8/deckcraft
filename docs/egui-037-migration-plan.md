@@ -1,8 +1,10 @@
 # DeckCraft: egui 0.37 migration plan
 
-Current candidate font pin: `37827adc41fd165f9a9234ac40f94dbad353aa69` restores the complete prior Latin catalog alongside the migration fallbacks. All three workflows now use that revision; it must be published before this app branch.
+Current candidate font pin: `37827adc41fd165f9a9234ac40f94dbad353aa69` restores the complete prior Latin catalog alongside the migration fallbacks. All three workflows use that published revision.
 
 Status update (2026-10-25): the candidate includes main `80f13011d5a3c353369c6e38250df6e5a260f3e0`, preserving its table-cell selection, text AutoFormat, edit-point history, fill controls, status accessibility and GPU-test serialization. IME deletion's undo entry retains main's new point-type state. Status-control assertions locate the actual laid-out status row, avoiding the identically named ribbon control without assuming fixed UI zoom. Managed run `egui037-deckcraft-status-row-ci-20261025-0753` passed the focused status regression and all eight CI stages: 2,045 passing test executions, zero failures and six ignored across 61 summaries. These are execution counts, including repeated tests. Required font coverage was separately validated in run 0724; the merged tree retains it and its tests. Cargo dependency pins and lockfile are unchanged by this refresh. Native/browser GUI, native IME and paired application performance remain open. Publication requires separate explicit approval; human review and human merge are required.
+
+Review follow-up (2026-10-25): managed run `egui037-deck-review-green-ci-20261025-0810` passed the required-font regression and all eight CI stages, including WASM: 2,058 passing test executions, zero failures and six ignored across 61 summaries. Native builds now require BIZ UDPGothic Bold while web builds require Regular only; the missing-Bold regression failed with the old acceptance behavior and passed with the fix. Accessibility queries now distinguish combo-box purpose from selected value. Complexity refactors preserve the existing behavior. Long-paragraph IME deletion still scans a prefix/suffix; bounded-cost and paired performance qualification remain open. Remote SonarCloud and CodeRabbit must rerun on the eventual published commit.
 
 The original planning record below is historical.
 
@@ -723,7 +725,8 @@ immutable full SHA is obtained, and **all three** pins move together:
 `.github/workflows/release.yml` (`craft-fonts-ref`). Do not invent or pre-commit a future SHA, and do
 not advance only one workflow. `crates/fonts/build.rs` now validates required builds after exclusion
 and, for wasm, the web filter: Inter Regular/Bold (or a supported Variable face) and BIZ UDPGothic
-Regular must actually be embedded, so a partial pin fails instead of silently losing the default
+Regular must actually be embedded, plus BIZ UDPGothic Bold natively for the weight pair; wasm keeps
+Regular only for its size budget. A partial pin fails instead of silently losing the default
 document/UI face.
 
 The required-input gate is explicit, but CI and FreeBSD qualification remain partial:

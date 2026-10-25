@@ -212,7 +212,7 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
     if let GradientShape::Linear { angle, .. } = &g.shape {
         ui.horizontal(|ui| {
             ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Angle"));
-            if let Some(a) = widgets::spinner(ui, &format!("{id}-angle"), *angle, 15.0, "°", 70.0) {
+            if let Some(a) = widgets::spinner(ui, &format!("{id}-angle"), "Angle", *angle, 15.0, "°", 70.0) {
                 out = Some(Gradient { shape: GradientShape::Linear { angle: a.rem_euclid(360.0), scaled: false }, ..g.clone() });
             }
         });
@@ -299,7 +299,7 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient, sc: &ColorScheme) ->
         });
         ui.horizontal(|ui| {
             ui.add_sized(vec2(70.0, 20.0), egui::Label::new("Position"));
-            if let Some(v) = widgets::spinner(ui, &format!("{id}-pos-{sel}"), (s.pos * 100.0).round(), 5.0, "%", 70.0) {
+            if let Some(v) = widgets::spinner(ui, &format!("{id}-pos-{sel}"), "Position", (s.pos * 100.0).round(), 5.0, "%", 70.0) {
                 let mut ng = g.clone();
                 ng.stops[sel].pos = (v / 100.0).clamp(0.0, 1.0);
                 ng.stops.sort_by(|a, b| a.pos.total_cmp(&b.pos));

@@ -212,8 +212,10 @@ fn model_pos(body: &TextBody, pos: (usize, usize)) -> Option<(usize, usize)> {
 /// characters), stopping at the end of the body. Returns the position reached and the characters
 /// and bytes consumed.
 ///
-/// The walk is what bounds the surrounding query: it never looks further than `limit`, so a
-/// megabyte body costs no more than a short one.
+/// The returned window is bounded by `limit`, but locating `from` inside a paragraph still walks
+/// that paragraph's runs from their start: runs do not cache character lengths, and a position is
+/// a character index. A megabyte paragraph therefore costs time proportional to the caret's
+/// character offset, even though the copied surrounding text stays within `limit`.
 fn walk_forward(
     body: &TextBody,
     comp: Option<(usize, usize, usize)>,
@@ -330,7 +332,9 @@ fn logical_between(body: &TextBody, comp: Option<(usize, usize, usize)>, start: 
 /// from an unavailable context. `cursor > anchor` is preserved for a reversed selection.
 ///
 /// Only a bounded window is measured and copied: the query walks at most the budget out from the
-/// selection on each side and never visits the rest of the body.
+/// selection on each side and does not copy the rest of the body. Finding the selection's
+/// character offsets inside one paragraph still scans that paragraph's prefix, so the time is not
+/// bounded independently of the paragraph length.
 pub fn ime_surrounding(st: &DocState, t: &TextSel) -> Option<ImeSurrounding> {
     let body = body_of(st, t)?;
     let comp = composition_range(body, st.composition.as_ref());
@@ -1449,21 +1453,6 @@ fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     let before_sel = st.selection.clone();
     let composing = st.composition.is_some();
     let vertex_kind = s.tool.vertex_kind.clone();
-    // Where the deletion before `start` begins decides how the selection moves: within the start
-    // paragraph its characters shift; from an earlier paragraph those paragraphs merge, so later
-    // paragraph numbers shift too.
-    let (from_para, from_char) = from;
-    let remap = move |pos: (usize, usize)| -> (usize, usize) {
-        if before_chars == 0 || pos < start {
-            return pos;
-        }
-        if from_para == start.0 {
-            // Only endpoints in the start paragraph move; later paragraphs keep their text.
-            if pos.0 == start.0 { (pos.0, pos.1 - before_chars) } else { pos }
-        } else {
-            (from_para + (pos.0 - start.0), if pos.0 == start.0 { from_char + (pos.1 - start.1) } else { pos.1 })
-        }
-    };
     edit_text(s, |body, t| {
         // Delete the after-range first, so the positions of the earlier range stay valid; then
         // the text before the selection.
@@ -1473,15 +1462,15 @@ fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
         if before_chars > 0 {
             ed::delete(body, from, start);
         }
-        t.anchor = remap(t.anchor);
-        t.caret = remap(t.caret);
+        t.anchor = remap_after_delete(t.anchor, start, from, before_chars);
+        t.caret = remap_after_delete(t.caret, start, from, before_chars);
         t.line_end = None;
     })?;
     if composing {
         if let Some(c) = s.doc_mut()?.composition.as_mut() {
             c.start = if before_chars == 0 {
                 start
-            } else if from_para == start.0 {
+            } else if from.0 == start.0 {
                 (start.0, start.1 - before_chars)
             } else {
                 from
@@ -1491,6 +1480,21 @@ fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
         push_undo(s.doc_mut()?, HistoryEntry { label: "Delete Text".into(), doc: before_doc, selection: before_sel, vertex_kind });
     }
     Ok(json!({"deleted": deleted}))
+}
+
+/// Map a text position across the deletion of `before_chars` characters that begins at `start`
+/// and reaches back to `from`. Within the start paragraph its characters shift; from an earlier
+/// paragraph those paragraphs merge, so later paragraph numbers shift too.
+fn remap_after_delete(pos: (usize, usize), start: (usize, usize), from: (usize, usize), before_chars: usize) -> (usize, usize) {
+    if before_chars == 0 || pos < start {
+        return pos;
+    }
+    if from.0 == start.0 {
+        // Only endpoints in the start paragraph move; later paragraphs keep their text.
+        if pos.0 == start.0 { (pos.0, pos.1 - before_chars) } else { pos }
+    } else {
+        (from.0 + (pos.0 - start.0), if pos.0 == start.0 { from.1 + (pos.1 - start.1) } else { pos.1 })
+    }
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {

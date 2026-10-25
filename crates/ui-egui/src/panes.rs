@@ -333,7 +333,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             let mut fields = |ui: &mut Ui, label: &str, id: &str, v: f64, key: &str, cmd: &str, unit: f64| {
                 ui.horizontal(|ui| {
                     ui.add_sized(vec2(90.0, 20.0), egui::Label::new(label));
-                    if let Some(nv) = widgets::spinner(ui, id, v / unit, 0.1, if unit == 72.0 { "\"" } else { "°" }, 70.0) {
+                    if let Some(nv) = widgets::spinner(ui, id, label, v / unit, 0.1, if unit == 72.0 { "\"" } else { "°" }, 70.0) {
                         let mut p = json!({key: nv * unit});
                         if cmd == "shape.resize" && locked {
                             p["lockAspect"] = json!(true);
@@ -403,7 +403,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             ] {
                 ui.horizontal(|ui| {
                     ui.add_sized(vec2(60.0, 20.0), egui::Label::new(l));
-                    if let Some(nv) = widgets::spinner(ui, &format!("m{k}"), v, 1.0, " pt", 60.0) {
+                    if let Some(nv) = widgets::spinner(ui, &format!("m{k}"), l, v, 1.0, " pt", 60.0) {
                         run(app, "format.margins", json!({k: nv.max(0.0)}));
                     }
                 });
@@ -551,7 +551,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.label("Width");
                 let w = sh.line.as_ref().and_then(|l| l.width).unwrap_or(0.75);
-                if let Some(v) = widgets::spinner(ui, "lw", w, 0.25, " pt", 60.0) {
+                if let Some(v) = widgets::spinner(ui, "lw", "Width", w, 0.25, " pt", 60.0) {
                     run(app, "shape.line", json!({"width": v.max(0.0)}));
                 }
             });
@@ -956,7 +956,7 @@ fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_mo
     ] {
         ui.horizontal(|ui| {
             ui.add_sized(vec2(72.0, 20.0), egui::Label::new(label));
-            if let Some(v) = widgets::spinner(ui, id, value, if scale < 1.0 { 5.0 } else { 1.0 }, suffix, 64.0) {
+            if let Some(v) = widgets::spinner(ui, id, label, value, if scale < 1.0 { 5.0 } else { 1.0 }, suffix, 64.0) {
                 let key = match id {
                     "bg-ox" => "offsetX",
                     "bg-oy" => "offsetY",

@@ -4031,7 +4031,12 @@ fn tables_with_a_file_defined_style_edit_and_resize() {
         && regular.style == "Regular"
         && bold.style == "Bold"
         && regular.weight < bold.weight;
-    assert!(metric_pair || option_env!("CRAFT_FONTS_REQUIRED").is_none(), "required BIZ Regular/Bold pair is absent");
+    // Required native builds validate and embed both BIZ faces (crates/fonts/build.rs);
+    // optional local builds may only have Regular, so the weight assertion is skipped there.
+    assert!(
+        metric_pair || option_env!("CRAFT_FONTS_REQUIRED").is_none(),
+        "required native build is missing the BIZ UDPGothic Regular/Bold metric pair"
+    );
     if metric_pair {
         let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
         let slide = std::sync::Arc::make_mut(&mut doc.slides[0]);

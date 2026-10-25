@@ -89,7 +89,9 @@ fn update_reflows_the_open_album() {
     assert!(h.query_by_label("Update").is_some());
     h.get_by_label("ALL pictures black and white").click();
     h.run_steps(2);
-    h.get_by_label("1 picture").click();
+    let layout = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Picture layout");
+    assert_eq!(layout.value().as_deref(), Some("1 picture"));
+    layout.click();
     h.run_steps(2);
     h.get_by_label("2 pictures").click();
     h.run_steps(2);
