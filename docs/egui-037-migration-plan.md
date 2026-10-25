@@ -1,5 +1,9 @@
 # DeckCraft: egui 0.37 migration plan
 
+Status update (2026-10-25): local implementation includes main `6a1c7354c152564c33d8489f6ea07ac585da0651`, preserving its animation changes unchanged. All eight CI stages passed: 1,995 passing test executions, zero failed, six ignored across 60 summaries. Strict lint, assets, layering and WASM checks passed; the integration received independent review. Pins and lockfile are unchanged. Native/browser GUI, native IME and paired application performance remain open. Publication requires separate explicit approval; human review and human merge are required.
+
+The original planning record below is historical.
+
 ## Current qualification — 2026-10-25
 
 The local candidate reconciles `main` through
