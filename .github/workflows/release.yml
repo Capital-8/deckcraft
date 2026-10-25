@@ -27,7 +27,7 @@ jobs:
       # Keep identical to ci.yml and freebsd.yml. The shared release workflow sets
       # CRAFT_FONTS_REQUIRED=1 in its packaging steps, so a pin without the reviewed Chinese
       # manifest fails the release instead of silently skipping it.
-      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      craft-fonts-ref: 37827adc41fd165f9a9234ac40f94dbad353aa69
       version: ${{ inputs.version }}
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

@@ -1,10 +1,12 @@
 # DeckCraft: egui 0.37 migration plan
 
-Status update (2026-10-25): local implementation includes main `6a1c7354c152564c33d8489f6ea07ac585da0651`, preserving its animation changes unchanged. All eight CI stages passed: 1,995 passing test executions, zero failed, six ignored across 60 summaries. Strict lint, assets, layering and WASM checks passed; the integration received independent review. Pins and lockfile are unchanged. Native/browser GUI, native IME and paired application performance remain open. Publication requires separate explicit approval; human review and human merge are required.
+Current candidate font pin: `37827adc41fd165f9a9234ac40f94dbad353aa69` restores the complete prior Latin catalog alongside the migration fallbacks. All three workflows now use that revision; it must be published before this app branch.
+
+Status update (2026-10-25): local implementation includes main `6a1c7354c152564c33d8489f6ea07ac585da0651`, preserving its animation changes unchanged. Managed run `egui037-deckcraft-font-final-ci-20261025-0724` passed the focused font tests, all eight CI stages and a separate required-font WASM check: 2,045 passing test executions, zero failures and six ignored across 63 summaries. These are execution counts, including repeated tests. Strict lint, assets, layering and full workspace WASM checks passed. Required native input now verifies Inter, BIZ and LXGW after filtering; required web input verifies Inter and BIZ. Broken optional Latin input preserves the valid core fonts. Fresh independent review found no blocking issue. The Cargo dependency pins and lockfile are unchanged by this font follow-up. Native/browser GUI, native IME and paired application performance remain open. Publication requires separate explicit approval; human review and human merge are required.
 
 The original planning record below is historical.
 
-## Current qualification — 2026-10-25
+## Earlier qualification before the combined font input — 2026-10-25
 
 The local candidate reconciles `main` through
 `38d2ade2b77de39c0e06278ddfd44d1082ff80a8` with the migration base
@@ -17,8 +19,10 @@ The final regression additions exercise the Notes accessibility toggle, no-docum
 Open/Actions/Preferences/File-menu shortcuts, ignored document-only shortcuts, and
 typing/IME isolation. Earlier validation failures and source-completeness warnings
 below describe retained history; the current review packet records the complete
-commit and its parents. Native/browser workflows and paired app performance remain
-open. No publication or merge is authorized by these results.
+commit and its parents. **The current review/approval packet is stale for publication
+pending a combined font pin:** `b076417…` has no Latin manifest/Inter, so the pinned
+input cannot supply the default document family. Native/browser workflows and paired
+app performance remain open. No publication or merge is authorized by these results.
 
 ## Historical planning and review records
 
@@ -706,28 +710,32 @@ so its root patch and lock are not crates.io publication artifacts, but releases
 still resolve the public storytold revisions. No stage is pushed or published without fresh human
 approval of the exact contents and validation.
 
-**Font pin gate (before publication, not local work).** The native Simplified-Chinese fallback is
-currently qualified against a local, dirty `craft-fonts-implementation` worktree: its
-`fonts/simplified-chinese-manifest.txt`, `fonts/lxgw-wenkai-lite/` files and `fonts/manifest.txt`
-row are uncommitted. That is expected unpublished work and must not be committed or published from
-the DeckCraft checkout; it does not block local builds and tests, which read that worktree through
-`CRAFT_FONTS_DIR`. Before any publication or release claims the Chinese migration, commit the
-reviewed manifest and face in `craft-fonts`, obtain an immutable full SHA, and update **all three**
-pins together: `.github/workflows/ci.yml` (`CRAFT_FONTS_REF`), `.github/workflows/freebsd.yml` and
-`.github/workflows/release.yml` (`craft-fonts-ref`). Do not invent or pre-commit a future SHA: the
-current shared pin remains `43913056ce82a3fdad0ef69f6b88d1dc922a8104`, whose tree has no Chinese
-manifest.
+**Font pin gate (before publication, not local work; stale pending a combined pin).** The three
+workflow pins currently name `b076417b5880bd4154bd22f00695b1d28c6bea83`, whose tree carries the
+reviewed Chinese manifest but has no `fonts/latin-manifest.txt` or Inter. The earlier
+`43913056ce82a3fdad0ef69f6b88d1dc922a8104` tree carried the Latin manifest/Inter but not the
+Chinese input. The parent is restoring the licensed Inter faces in the central
+`craft-fonts-implementation` checkout; that work is unpublished and must not be committed from the
+DeckCraft checkout. Therefore this approval packet is **stale**: do not approve or publish it until
+the reviewed Latin manifest/faces and Chinese manifest are committed together in `craft-fonts`, an
+immutable full SHA is obtained, and **all three** pins move together:
+`.github/workflows/ci.yml` (`CRAFT_FONTS_REF`), `.github/workflows/freebsd.yml` and
+`.github/workflows/release.yml` (`craft-fonts-ref`). Do not invent or pre-commit a future SHA, and do
+not advance only one workflow. `crates/fonts/build.rs` now validates required builds after exclusion
+and, for wasm, the web filter: Inter Regular/Bold (or a supported Variable face) and BIZ UDPGothic
+Regular must actually be embedded, so a partial pin fails instead of silently losing the default
+document/UI face.
 
-The required-input gate is explicit but cannot fire until that pin advances:
+The required-input gate is explicit, but CI and FreeBSD qualification remain partial:
 
-- `ci.yml` runs the `Font pin gate` as a local preflight job before the shared gate. While the
-  pin is the known pending `43913056…` commit it emits a warning; any *other* pin without
-  `fonts/simplified-chinese-manifest.txt` fails the job, so advancing the pin cannot silently
-  keep the gate off. The shared `gate.yml` job does not accept a `CRAFT_FONTS_REQUIRED` input or
+- `ci.yml` runs the `Font pin gate` as a local preflight job before the shared gate. It checks the
+  Chinese manifest but not the Latin manifest, so the build script's required-mode validation is
+  the guard for Inter. The shared `gate.yml` job does not accept a `CRAFT_FONTS_REQUIRED` input or
   another workflow's exported environment, so the CI job verifies the pin but cannot yet force
   the required-font environment into `cargo xtask ci`; release and FreeBSD notes below apply.
 - The shared release workflow already sets `CRAFT_FONTS_REQUIRED=1` in every packaging step, so a
-  release on a pin without the manifest fails instead of shipping without Chinese fonts.
+  release on a pin without the Chinese manifest or the required Inter/BIZ faces fails instead of
+  shipping without them.
 - The shared FreeBSD workflow passes `CRAFT_FONTS_DIR` to `cargo test` but currently exposes no
   `CRAFT_FONTS_REQUIRED` input. Its required-font gate therefore remains **pending** until
   `craft-common-actions` adds one (or the caller can otherwise set that environment); do not cite
@@ -1422,22 +1430,22 @@ This section records the final local state after
 Earlier sections remain the historical plan and implementation amendments; where they describe an
 earlier snapshot or an open plan-time gap, this section is the current local status.
 
-### Source identity (uncommitted, not a qualified commit)
+### Current review follow-up — 2026-10-25
 
-- Local base HEAD: `770f4653bff0700b33d8475181e168da90a7ad4f`.
-- Reviewed source: that base plus tracked edits and **five untracked source files**, which must be
-  included in any eventual commit:
-  `crates/engine/tests/show_paragraph_builds.rs`,
-  `crates/format/src/rtf.rs`,
-  `crates/pptx/tests/chart_data_labels.rs`,
-  `crates/ui-egui/src/field_frame_tests.rs` and
-  `crates/ui-egui/src/preferences_tests.rs`.
-- `crates/format/src/lib.rs` declares `pub mod rtf;` and the UI modules declare the two
-  `*_tests` files, so a clean checkout or archive of `770f4653` alone cannot build or run the
-  reviewed source. `770f4653` is a local base for the dirty union, **not** a qualified commit.
-- Focused reviewed hashes: `crates/ui-egui/src/thumbs.rs` `f21c09ba…`,
-  `crates/ui-egui/src/ime_tests.rs` `c433b847…`, `crates/ui-egui/src/lib.rs` `df8b48ba…`,
-  `Cargo.toml` `467ccc3e…`, `Cargo.lock` `33a3d3d8…`.
+The candidate workflows now use `37827adc41fd165f9a9234ac40f94dbad353aa69`, combining
+all prior Latin presentation fonts with the migration's core and Chinese fallbacks.
+This commit must be published before these workflow pins can be fetched remotely.
+The reusable CI gate explicitly sets `require-craft-fonts: true`; its current default
+also enables required mode. The earlier statement that this cannot be passed to the
+shared gate is obsolete.
+
+The local base for this follow-up is `8372d51552c3ed943ffeb283f26a482e94a2c12f`.
+The five source files listed in the earlier dirty-union review are already tracked in
+that commit. The follow-up also includes `crates/fonts/tests/fixtures/latin-families.txt`;
+its 51-row family/style inventory comes from the prior `76ba5a0` catalog, whose font
+bytes are preserved by the combined candidate. Include that fixture with the code.
+Full follow-up checks and the final local review commit are recorded in the next
+publication packet; old dirty-union hashes below are historical evidence only.
 
 ### Final pins
 

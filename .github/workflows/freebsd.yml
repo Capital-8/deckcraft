@@ -31,4 +31,4 @@ jobs:
       # CRAFT_FONTS_DIR to its tests but has no CRAFT_FONTS_REQUIRED input yet, so it does not
       # qualify the required Chinese input after the pin advances; that gate stays explicitly
       # pending in docs/egui-037-migration-plan.md section 5.1.
-      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      craft-fonts-ref: 37827adc41fd165f9a9234ac40f94dbad353aa69
