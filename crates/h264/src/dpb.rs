@@ -352,12 +352,19 @@ impl Dpb {
                 had5 = true;
             }
             6 => {
-                for e in &mut self.entries {
-                    if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
-                        e.mark = RefMark::Unused;
+                // Only an index within the allowed range may be assigned (8.2.5.4.6).
+                let allowed = match self.max_long_term_frame_idx {
+                    Some(max) => m.long_term_frame_idx <= max,
+                    None => false,
+                };
+                if allowed {
+                    for e in &mut self.entries {
+                        if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
+                            e.mark = RefMark::Unused;
+                        }
                     }
+                    *cur_long = Some(m.long_term_frame_idx);
                 }
-                *cur_long = Some(m.long_term_frame_idx);
             }
             _ => {}
         }
