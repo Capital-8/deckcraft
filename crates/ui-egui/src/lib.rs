@@ -57,6 +57,45 @@ pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 pub type OpenAsyncFn = Box<dyn FnMut(&str, u64)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
 
+/// Temp key holding whether the current viewport is inside an egui UI pass.
+fn ime_in_ui_pass_key(viewport: egui::ViewportId) -> egui::Id {
+    egui::Id::unique(("deckcraft-ime-in-ui-pass", viewport))
+}
+
+fn ime_pass_hooks_key() -> egui::Id {
+    egui::Id::unique(("deckcraft-ime-pass-hooks", "installed"))
+}
+
+/// Install the per-viewport UI-pass mode hooks exactly once for this [`egui::Context`].
+///
+/// Call this before the context's first `run_ui` (desktop/web shells and the test harness).
+/// The callbacks receive `&mut Ui`; they obtain the context through `ui.ctx()` and capture no
+/// context or app reference, so they cannot form a reference cycle. The flag distinguishes a
+/// full `run_ui` pass (where `App::logic` runs before the UI that owns the final output) from a
+/// standalone `run_logic` callback. It is only a mode marker, not an IME publication receipt.
+pub fn install_ime_pass_hooks(ctx: &egui::Context) {
+    if ctx.data(|d| d.get_temp::<bool>(ime_pass_hooks_key()).is_some_and(|v| v)) {
+        return;
+    }
+    ctx.on_begin_pass(
+        "deckcraft-ime-ui-pass-begin",
+        std::sync::Arc::new(|ui: &mut egui::Ui| {
+            let ctx = ui.ctx();
+            let key = ime_in_ui_pass_key(ctx.viewport_id());
+            ctx.data_mut(|d| d.insert_temp(key, true));
+        }),
+    );
+    ctx.on_end_pass(
+        "deckcraft-ime-ui-pass-end",
+        std::sync::Arc::new(|ui: &mut egui::Ui| {
+            let ctx = ui.ctx();
+            let key = ime_in_ui_pass_key(ctx.viewport_id());
+            ctx.data_mut(|d| d.insert_temp(key, false));
+        }),
+    );
+    ctx.data_mut(|d| d.insert_temp(ime_pass_hooks_key(), true));
+}
+
 /// A file the host finished reading for the request `id` from [`SlideApp::begin_external_file`].
 #[derive(Clone, Debug)]
 pub struct InboxFile {
@@ -155,7 +194,7 @@ fn open_command(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     if is_presentation_name(&lower) {
         Some("file.openBytes")
-    } else if lower.ends_with(".txt") || lower.ends_with(".md") {
+    } else if lower.ends_with(".txt") || lower.ends_with(".md") || lower.ends_with(".rtf") {
         Some("slide.fromOutline")
     } else {
         None
@@ -176,7 +215,7 @@ fn infer_command(name: &str, bytes: &[u8]) -> Option<&'static str> {
         Some("insert.audio")
     } else if ct.starts_with("video/") {
         Some("insert.video")
-    } else if lower.ends_with(".txt") || lower.ends_with(".md") {
+    } else if lower.ends_with(".txt") || lower.ends_with(".md") || lower.ends_with(".rtf") {
         Some("slide.fromOutline")
     } else {
         None
@@ -245,6 +284,10 @@ pub struct UiState {
     pub notes: bool,
     pub notes_height: f32,
     pub thumbs_width: f32,
+    /// Vertical scroll offset of the thumbnail pane, recorded each frame for the control
+    /// channel and tests; not persisted.
+    #[serde(skip)]
+    pub thumbs_scroll: f32,
     /// Open task pane: `format`, `animation`, `selection`, `comments`, `designer`, `background`,
     /// `smartart` (Text Pane).
     pub pane: Option<String>,
@@ -287,6 +330,7 @@ impl Default for UiState {
             notes: true,
             notes_height: 52.0,
             thumbs_width: 236.0,
+            thumbs_scroll: 0.0,
             pane: None,
             pane_width: 300.0,
             ruler: false,
@@ -611,6 +655,10 @@ pub struct SlideApp {
     ime_settles_seen: u64,
     /// A composition the application settled has not been announced to the platform yet.
     ime_interrupt_pending: bool,
+    /// Token-bound reset lifetime for the owning root viewport's custom canvas editor. The map is
+    /// keyed by viewport so a request or completion stamped for another viewport is never bound;
+    /// render-only child viewports are rejected before they can create or overwrite an entry.
+    ime_reset: HashMap<egui::ViewportId, ImeResetPhase>,
 }
 
 /// The platform's in-progress IME composition, as far as this editor tracks it.
@@ -649,6 +697,77 @@ struct ImeTerminalPending {
     anchor: (usize, usize),
     caret: (usize, usize),
     cancelled: bool,
+    /// An interruption has been observed since this guard was recorded. This stays distinct from
+    /// the origin snapshot even when there is no active destination to stamp: `interrupted_at ==
+    /// None` then means "interrupted with no target", not "not interrupted yet".
+    interrupted: bool,
+    /// The destination at which this terminal guard was last interrupted. Kept separately from
+    /// the retired origin above: repeated passes at the same interrupted destination must not
+    /// request another reset, while a genuinely newer target/selection/revision change still
+    /// supersedes the current fence. When `interrupted` is false, `None` means the origin snapshot
+    /// is still the reference; once interrupted, it means the interruption left no destination.
+    interrupted_at: Option<ImeTerminalStamp>,
+}
+
+/// The live target/selection stamp used to detect a new application interruption without
+/// discarding the retired composition's origin. Owner is optional because an interruption can
+/// remove the canvas target entirely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImeTerminalStamp {
+    owner: Option<egui::Id>,
+    revision: u64,
+    anchor: Option<(usize, usize)>,
+    caret: Option<(usize, usize)>,
+}
+
+/// The live canvas target and caret/selection stamp a reset fence is bound to.
+///
+/// The retired composition's origin is deliberately absent: an app-originated interruption can
+/// move the destination, and the replacement request belongs to the current destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImeDestination {
+    owner: egui::Id,
+    revision: u64,
+    anchor: Option<(usize, usize)>,
+    caret: Option<(usize, usize)>,
+}
+
+/// The actual custom descriptor identity a reset request is allowed to acknowledge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImeDescriptorKey {
+    owner: egui::Id,
+    context_generation: u64,
+    purpose: egui::IMEPurpose,
+}
+
+impl ImeDescriptorKey {
+    fn new(owner: egui::Id, context_generation: u64, purpose: egui::IMEPurpose) -> Self {
+        Self { owner, context_generation, purpose }
+    }
+}
+
+/// Explicit lifetime of the canvas's token-bound IME reset fence.
+///
+/// This is separate from the composition provenance/tombstone state above. Only a matching
+/// ordered `ImeResetCompleted` clears `Awaiting`; `Enabled`, `Disabled`, empty preedits, idle
+/// passes and timers never do. `Suspended` retains no acceptable old id and may carry one newly
+/// requested id that a later eligible pass can bind.
+#[derive(Clone, Copy, Debug)]
+enum ImeResetPhase {
+    /// No interrupted composition guard.
+    Clear,
+    /// The exact newest request has been published for this destination/descriptor.
+    Awaiting { id: egui::ImeResetId, viewport: egui::ViewportId, destination: ImeDestination, output_context: ImeDescriptorKey },
+    /// Guarded but no old id is acceptable; `request` is a new, not-yet-bound fence.
+    Suspended { viewport: egui::ViewportId, needs_rearm: bool, request: Option<egui::ImeResetId> },
+    /// No fence could be allocated; remain fail-closed without retrying on idle output.
+    AllocationFailed { viewport: egui::ViewportId, destination: ImeDestination, output_context: ImeDescriptorKey },
+}
+
+impl ImeResetPhase {
+    fn blocks_custom_input(self) -> bool {
+        !matches!(self, Self::Clear)
+    }
 }
 
 fn grid_options_touched(p: &Value) -> bool {
@@ -739,6 +858,7 @@ impl SlideApp {
             ime_generation: 0,
             ime_settles_seen: 0,
             ime_interrupt_pending: false,
+            ime_reset: HashMap::new(),
         }
     }
 
@@ -962,6 +1082,7 @@ impl SlideApp {
             "jpeg" | "jpg" => ("jpg", "jpeg", false),
             "pptx" => ("pptx", "pptx", false),
             "outline" | "txt" => ("txt", "outline", false),
+            "rtf" => ("rtf", "rtf", false),
             "deckcraft" => ("deckcraft", "deckcraft", false),
             "gif" => ("gif", "gif", false),
             other => {
@@ -1477,7 +1598,20 @@ impl SlideApp {
             return;
         };
         let Some(path) = pick("open") else { return };
-        match self.session.execute("slide.reuse", &json!({"path": path, "keepFormatting": keep})) {
+        // Offer the file's slides to choose from; all of them are ticked to begin with.
+        match self.session.execute("slide.reuseList", &json!({"path": path})) {
+            Ok(list) => {
+                let mut d = dialogs::Dialog::new("reuseSlides");
+                d.params = json!({"path": path, "keep": keep, "slides": list["slides"]});
+                self.dialog = Some(d);
+            }
+            Err(e) => self.set_status(e.to_string()),
+        }
+    }
+
+    /// Insert the slides `picked` (indices) of the presentation at `path` after the current slide.
+    pub fn reuse_slides(&mut self, path: &str, keep: bool, picked: &[usize]) {
+        match self.session.execute("slide.reuse", &json!({"path": path, "keepFormatting": keep, "slides": picked})) {
             Ok(r) => self.set_status(format!("Inserted {} slides from {path}", r["slides"])),
             Err(e) => self.set_status(e.to_string()),
         }
@@ -1687,7 +1821,7 @@ impl SlideApp {
             }
         };
         let params = if cmd == "slide.fromOutline" {
-            json!({"text": String::from_utf8_lossy(bytes), "markdown": name.to_ascii_lowercase().ends_with(".md")})
+            json!({"text": deckcraft_engine::cmd::file::outline_text(bytes), "markdown": name.to_ascii_lowercase().ends_with(".md")})
         } else {
             json!({"name": name, "data": deckcraft_engine::cmd::base64_encode(bytes)})
         };
@@ -1821,6 +1955,10 @@ impl SlideApp {
     /// opening/inbox results, screenshot completions/deadlines, AutoRecover pacing and media
     /// clocks. UI events are handled in [`Self::ui`], where a forced hidden paint also arrives.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        if !Self::root_viewport_admitted(ctx) {
+            log::debug!("ignoring SlideApp::logic for render-only viewport {:?}", ctx.viewport_id());
+            return;
+        }
         self.tick_hidden_show(ctx, web_time::Instant::now());
         // `raw_input_hook` runs before `App::logic`. In a full pass egui has already built
         // `PointerState` and `keys_down` from every injected event, so retracting the events after
@@ -1858,6 +1996,14 @@ impl SlideApp {
         }
         self.autosave_if_due(ctx);
         self.tick_media_clock(ctx);
+        self.note_settled_composition(ctx);
+        // In a full run_ui pass the UI callback after this logic half still owns the pass's final
+        // IME descriptor. Only a standalone run_logic callback proves that no custom editor was
+        // painted for this tick. Do not infer this from cumulative frame counters or stale
+        // geometry.
+        if !self.ime_in_ui_pass(ctx) {
+            self.finalize_ime_logic(ctx);
+        }
     }
 
     /// Style, fonts and zoom setup. Runs in a real UI pass, not from `run_logic`, because
@@ -1905,10 +2051,9 @@ impl SlideApp {
         }
     }
 
-    /// Record the settled UI geometry and issue due screenshots. Call once at the end of a real
-    /// pass, after layout, not from `logic`/`run_logic`.
+    /// Issue due screenshots and finish pass-local UI bookkeeping. Call once at the end of a real
+    /// pass after layout; the outer [`Self::ui`] wrapper observes IME output after this returns.
     fn ui_end(&mut self, ctx: &egui::Context) {
-        self.observe_ime(ctx);
         self.ime_frame_viewport = None;
         self.capture.observe_ui(ctx);
         if !ctx.will_discard() {
@@ -2025,25 +2170,269 @@ impl SlideApp {
         }
     }
 
+    /// The current live destination for an IME reset fence.
+    fn ime_destination(&self) -> Option<ImeDestination> {
+        let st = self.session.active()?;
+        let target = self.ime_target()?;
+        let (anchor, caret) = st.selection.text.as_ref().map_or((None, None), |t| (Some(t.anchor), Some(t.caret)));
+        Some(ImeDestination { owner: target.owner, revision: st.revision, anchor, caret })
+    }
+
+    fn ime_viewport_or(&self, ctx: &egui::Context) -> egui::ViewportId {
+        self.ime_frame_viewport.filter(|v| *v == ctx.viewport_id()).unwrap_or_else(|| ctx.viewport_id())
+    }
+
+    /// The reset guard belonging to exactly this viewport. There is deliberately no fallback to
+    /// another viewport's phase.
+    pub(crate) fn ime_reset_for(&self, viewport: egui::ViewportId) -> ImeResetPhase {
+        self.ime_reset.get(&viewport).copied().unwrap_or(ImeResetPhase::Clear)
+    }
+
+    fn set_ime_reset(&mut self, viewport: egui::ViewportId, phase: ImeResetPhase) {
+        if matches!(phase, ImeResetPhase::Clear) {
+            let _ = self.ime_reset.remove(&viewport);
+        } else {
+            self.ime_reset.insert(viewport, phase);
+        }
+    }
+
+    /// The live stamp used to compare against the origin/interrupted terminal destination.
+    fn ime_terminal_stamp(&self) -> Option<ImeTerminalStamp> {
+        let st = self.session.active()?;
+        let (anchor, caret) = st.selection.text.as_ref().map_or((None, None), |t| (Some(t.anchor), Some(t.caret)));
+        Some(ImeTerminalStamp { owner: self.ime_target().map(|t| t.owner), revision: st.revision, anchor, caret })
+    }
+
+    /// Positive route predicate for the canvas IME producer: this pass must be one that can
+    /// actually paint `canvas::show` for the active document, with no modal, stock field or
+    /// overlay owning input.
+    ///
+    /// Sorter and Notes Page are editor views without a canvas producer, so they are named here
+    /// even though the retained selection still yields an `ime_target`. A hidden, unfocused or
+    /// closing window, a missing document/target, a focused stock field, modal dialog, palette,
+    /// Backstage, slide show and opening overlay lose admission too. The finalizer remains the
+    /// authority for this pass's actual descriptor; keeping this predicate positive means a view
+    /// added later is not admitted by omission simply because it does not call `canvas::show`.
+    fn ime_custom_canvas_route(&self, ctx: &egui::Context) -> bool {
+        matches!(self.ui.view, ViewMode::Normal | ViewMode::Outline | ViewMode::Reading)
+            && self.session.active().is_some()
+            && self.ime_target().is_some()
+            && ctx.input(|i| i.viewport().focused.unwrap_or(true))
+            && ctx.input(|i| i.viewport().visible() != Some(false))
+            && !ctx.input(|i| i.viewport().close_requested())
+            && ctx.memory(|m| m.focused().is_none())
+            && self.dialog.as_ref().is_none_or(|d| !d.modal())
+            && self.palette.is_none()
+            && self.backstage.is_none()
+            && self.show.is_none()
+            && self.opening.is_none()
+    }
+
+    /// The singleton app's session, composition tracker and terminal guard belong to its owning
+    /// viewport. View › New Window and Presenter View render through their own immediate
+    /// viewports and never call `logic`/`ui`; admitting such a callback would let a render-only
+    /// viewport mutate root composition state while only the reset map is per-viewport. Reject it
+    /// before any state changes instead of pretending to support multi-view editing.
+    fn root_viewport_admitted(ctx: &egui::Context) -> bool {
+        ctx.viewport_id() == egui::ViewportId::ROOT
+    }
+
+    fn ime_in_ui_pass(&self, ctx: &egui::Context) -> bool {
+        let key = ime_in_ui_pass_key(self.ime_viewport_or(ctx));
+        ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(false))
+    }
+
+    /// A new application-origin interruption supersedes any previous pending fence.
+    ///
+    /// This runs from the logic half of a full pass and from raw input handling, before the
+    /// finalizer has seen this pass's actual custom descriptor. No request is allocated here:
+    /// putting a token into egui `Memory` now would let egui attach it to a later stock
+    /// descriptor, or to a canvas this route does not paint. Retire the superseded id
+    /// immediately and store an unbound `Suspended { request: None }`; only the finalizer may
+    /// allocate its one replacement after confirming an eligible custom output.
+    fn note_ime_interruption(&mut self, ctx: &egui::Context, fresh: bool) {
+        let viewport = self.ime_viewport_or(ctx);
+        if !fresh
+            && matches!(
+                self.ime_reset_for(viewport),
+                ImeResetPhase::Awaiting { viewport: guard_viewport, .. }
+                    | ImeResetPhase::Suspended { viewport: guard_viewport, .. }
+                    if guard_viewport == viewport
+            )
+        {
+            // This viewport already has a live or suspended guard. The finalizer replaces it
+            // once if the actual destination changed; do not churn a request per event.
+            return;
+        }
+        self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+    }
+
+    /// Custom admission was lost on this route. Retire the old id without inventing an
+    /// acknowledgement and block until a later eligible pass can request a replacement.
+    fn suspend_ime_reset(&mut self, viewport: egui::ViewportId) {
+        if self.ime_reset_for(viewport).blocks_custom_input() {
+            self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+        }
+    }
+
+    /// An ordered completion for the exact newest request. Wrong/foreign/obsolete markers are
+    /// inert; this never mutates text, caret or undo history.
+    fn ime_reset_completed(&mut self, request_id: egui::ImeResetId, ctx: &egui::Context) {
+        let viewport = self.ime_viewport_or(ctx);
+        if request_id.viewport_id() != viewport {
+            return;
+        }
+        if let ImeResetPhase::Awaiting { id, viewport: waiting_viewport, .. } = self.ime_reset_for(viewport)
+            && id == request_id
+            && waiting_viewport == viewport
+        {
+            self.set_ime_reset(viewport, ImeResetPhase::Clear);
+            // The exact ordered completion is the platform-reset boundary. It also releases a
+            // cleared-preedit terminal guard: the app no longer has to wait for the old
+            // Commit/Enabled/Disabled before a fresh composition may start. Events ordered
+            // before this marker remain rejected; a late old terminal after the reset has the
+            // same documented residual as any other event crossing a platform reset.
+            if self.ime_terminal_pending.as_ref().is_some_and(|p| p.cancelled) {
+                self.ime_terminal_pending = None;
+            }
+            if self.ime_composition.is_some_and(|c| c.settled) {
+                self.ime_composition = None;
+            }
+            self.ime_cancelled = None;
+            self.ime_interrupt_pending = false;
+        }
+    }
+
+    /// Controls-only routing for a route where the custom editor cannot mutate. Markers are
+    /// visited in raw order; stock text/key events stay untouched for the stock widgets.
+    fn route_ime_controls_only(&mut self, ctx: &egui::Context, events: &[egui::Event]) {
+        for e in events {
+            if let egui::Event::ImeResetCompleted { request_id } = e {
+                self.ime_reset_completed(*request_id, ctx);
+            }
+        }
+    }
+
+    /// Bind a suspended reset to the actual custom descriptor, or retire it on loss.
+    fn finalize_ime_reset(&mut self, ctx: &egui::Context, custom: Option<ImeDescriptorKey>) {
+        let viewport = self.ime_viewport_or(ctx);
+        let phase = self.ime_reset_for(viewport);
+        let actual = ctx.output(|o| o.ime.as_ref().map(|i| ImeDescriptorKey::new(i.owner, i.context_generation, i.purpose)));
+        let destination = self.ime_destination();
+        // The finalizer is the allocation authority, so it rechecks the positive canvas route
+        // and that this pass is not already known to be discarded. Sorter/Notes Page, a modal,
+        // palette, Backstage, show, opening overlay, hidden window, stock focus, font/layout
+        // discard or a missing target must suspend without putting a token into egui Memory.
+        let eligible = self.ime_custom_canvas_route(ctx) && !ctx.will_discard();
+        let custom_output = match (eligible, custom, actual, destination) {
+            (true, Some(custom), Some(actual), Some(destination)) if custom == actual => Some((custom, destination)),
+            _ => None,
+        };
+        let Some((output_context, destination)) = custom_output else {
+            match phase {
+                ImeResetPhase::Clear => {}
+                ImeResetPhase::Awaiting { .. } => {
+                    self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+                }
+                ImeResetPhase::Suspended { viewport: guard_viewport, request, .. } => {
+                    // A request that was not bound to the actual custom output in this pass is
+                    // retired locally; a later eligible activation obtains a fresh one. A guard
+                    // stamped for another viewport (or a request issued for one) is never reused.
+                    if guard_viewport != viewport || request.is_some() {
+                        self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+                    }
+                }
+                ImeResetPhase::AllocationFailed { .. } => {
+                    self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+                }
+            }
+            return;
+        };
+        match phase {
+            ImeResetPhase::Clear => {}
+            ImeResetPhase::Awaiting { viewport: old_viewport, destination: old_destination, output_context: old_context, .. } => {
+                if old_viewport != viewport || old_destination != destination || old_context != output_context {
+                    self.request_ime_rearm(ctx, viewport, destination, output_context);
+                }
+            }
+            ImeResetPhase::Suspended { viewport: guard_viewport, request, needs_rearm } => {
+                let request = if needs_rearm && guard_viewport == viewport {
+                    // Only a request issued for this exact viewport may be bound here.
+                    request.filter(|id| id.viewport_id() == viewport)
+                } else {
+                    None
+                };
+                match request.or_else(|| ctx.request_ime_reset(viewport)) {
+                    Some(id) => {
+                        self.set_ime_reset(viewport, ImeResetPhase::Awaiting { id, viewport, destination, output_context });
+                    }
+                    None => {
+                        self.set_ime_reset(viewport, ImeResetPhase::AllocationFailed { viewport, destination, output_context });
+                    }
+                }
+            }
+            ImeResetPhase::AllocationFailed { viewport: old_viewport, destination: old_destination, output_context: old_context } => {
+                // Repeated idle output for the same destination does not retry allocation.
+                if old_viewport != viewport || old_destination != destination || old_context != output_context {
+                    self.request_ime_rearm(ctx, viewport, destination, output_context);
+                }
+            }
+        }
+    }
+
+    fn request_ime_rearm(&mut self, ctx: &egui::Context, viewport: egui::ViewportId, destination: ImeDestination, output_context: ImeDescriptorKey) {
+        match ctx.request_ime_reset(viewport) {
+            Some(id) => self.set_ime_reset(viewport, ImeResetPhase::Awaiting { id, viewport, destination, output_context }),
+            None => self.set_ime_reset(viewport, ImeResetPhase::AllocationFailed { viewport, destination, output_context }),
+        }
+    }
+
+    /// A standalone run_logic tick paints no custom geometry. Suspend once, without replaying
+    /// stale input; the next full UI pass can rearm from its actual descriptor.
+    fn finalize_ime_logic(&mut self, ctx: &egui::Context) {
+        let viewport = self.ime_viewport_or(ctx);
+        if self.ime_reset_for(viewport).blocks_custom_input() {
+            // Only this viewport's guard is touched. A root/child logic tick must not suspend or
+            // rebind another viewport's independent reset lifetime.
+            self.set_ime_reset(viewport, ImeResetPhase::Suspended { viewport, needs_rearm: true, request: None });
+        }
+    }
+
     /// Note compositions the application settled since the last check (a click, a key, another
     /// command). Those are announced to the platform as an interrupt in [`Self::observe_ime`],
     /// and a platform event for them is stale from that moment on, even in the same pass.
-    fn note_settled_composition(&mut self) {
+    fn note_settled_composition(&mut self, ctx: &egui::Context) {
         let settles = self.session.composition_settles();
-        let owner = self.ime_target().map(|t| t.owner);
-        let state = self.session.active().and_then(|st| st.selection.text.as_ref().map(|t| (st.revision, t.anchor, t.caret)));
-        let pending_interrupted = self
-            .ime_terminal_pending
-            .as_ref()
-            .is_some_and(|p| !p.cancelled && (owner != Some(p.owner) || state != Some((p.revision, p.anchor, p.caret))));
+        let current_stamp = self.ime_terminal_stamp();
+        // `file.close` then `file.new` can replace the active uid before any pass observes the
+        // empty document. That is not a safe boundary for the old terminal: the platform may
+        // still deliver its suffix. Keep the guard bound to its retired owner and treat the new
+        // destination as a fresh interruption; only exact reset completion or an observed
+        // teardown may clear the terminal metadata.
+        let pending_interrupted = self.ime_terminal_pending.as_ref().is_some_and(|p| {
+            let reference = if p.interrupted {
+                p.interrupted_at
+            } else {
+                Some(ImeTerminalStamp { owner: Some(p.owner), revision: p.revision, anchor: Some(p.anchor), caret: Some(p.caret) })
+            };
+            reference != current_stamp
+        });
         if settles == self.ime_settles_seen && !pending_interrupted {
             return;
         }
+        let fresh = settles != self.ime_settles_seen;
         self.ime_settles_seen = settles;
         if let Some(pending) = &mut self.ime_terminal_pending {
             pending.cancelled = true;
+            pending.interrupted = true;
+            // Compare later passes against the destination where interruption actually happened,
+            // not forever against the retired composition's origin. The destination may be absent
+            // (the interruption closed its target); `interrupted` keeps that distinct from "not
+            // interrupted yet".
+            pending.interrupted_at = current_stamp;
         }
         self.ime_interrupt_pending = true;
+        self.note_ime_interruption(ctx, fresh);
         let cancelled = self.ime_composition.as_mut().map(|c| {
             c.settled = true;
             (c.owner, c.generation)
@@ -2071,7 +2460,7 @@ impl SlideApp {
     /// delete-surrounding mutation. Preedit, rejected/failed events and no-ops never earn
     /// [`egui::output::ImeChangeCause::InputMethod`].
     fn ime_event(&mut self, ctx: &egui::Context, e: &egui::ImeEvent) {
-        self.note_settled_composition();
+        self.note_settled_composition(ctx);
         let viewport = self.ime_frame_viewport.unwrap_or_else(|| ctx.viewport_id());
         let frame = ctx.cumulative_frame_nr_for(viewport);
         let target = self.ime_target();
@@ -2124,6 +2513,13 @@ impl SlideApp {
             self.ime_composition = None;
             // Ask the backend to drop its copy, so this is one stale event and not a stream.
             ctx.memory_mut(|m| m.interrupt_ime());
+            return;
+        }
+        // Until the exact newest reset request completes at its ordered stream position, custom
+        // mutations stay blocked. Platform enable/disable signals are not acknowledgements and do
+        // not release this guard; they still settle the old composition below.
+        #[allow(deprecated)]
+        if self.ime_reset_for(viewport).blocks_custom_input() && !matches!(e, egui::ImeEvent::Disabled | egui::ImeEvent::Enabled) {
             return;
         }
         let before = if accepted { self.ime_receipt_stamp() } else { None };
@@ -2203,8 +2599,15 @@ impl SlideApp {
                         if let Some(st) = self.session.active()
                             && let Some(t) = &st.selection.text
                         {
-                            self.ime_terminal_pending =
-                                Some(ImeTerminalPending { owner, revision: st.revision, anchor: t.anchor, caret: t.caret, cancelled: false });
+                            self.ime_terminal_pending = Some(ImeTerminalPending {
+                                owner,
+                                revision: st.revision,
+                                anchor: t.anchor,
+                                caret: t.caret,
+                                cancelled: false,
+                                interrupted: false,
+                                interrupted_at: None,
+                            });
                         }
                     }
                     _ => {
@@ -2233,7 +2636,8 @@ impl SlideApp {
 
     /// Observe the canvas IME owner once per pass and publish its descriptor.
     ///
-    /// No canvas target, a focused egui field, a modal, the palette or the Backstage view means
+    /// No canvas target, a Sorter/Notes Page view, a focused egui field, a modal, the palette,
+    /// the Backstage view, a slide show, an opening overlay, or an unfocused/hidden window means
     /// the custom owner is hidden: the tracker is told so and the next focus starts a new
     /// generation. The descriptor is rebuilt from the current committed text every pass.
     ///
@@ -2241,19 +2645,29 @@ impl SlideApp {
     /// `should_interrupt_composition`, so the backend cancels the platform's copy of it. That
     /// settled pass is also the active-composition tombstone's lifecycle end. A cleared-preedit
     /// terminal retains its separate pending owner until the incoming terminal is observed.
-    fn observe_ime(&mut self, ctx: &egui::Context) {
+    fn observe_ime(&mut self, ctx: &egui::Context) -> Option<ImeDescriptorKey> {
         let viewport = self.ime_frame_viewport.unwrap_or_else(|| ctx.viewport_id());
-        self.note_settled_composition();
+        self.note_settled_composition(ctx);
         // The editing window going away really ends the viewport's context; a merely hidden
         // owner (modal, palette, unfocused field) stays observed as unfocused instead.
         if self.session.active().is_none() || ctx.input(|i| i.viewport().close_requested()) {
             self.ime_interrupt_pending = false;
             if let Some(old) = self.ime_viewport.take() {
                 self.ime_tracker.end_viewport(old);
+                // Explicit viewport destruction removes only that viewport's guard.
+                let _ = self.ime_reset.remove(&old);
             }
+            let _ = self.ime_reset.remove(&viewport);
             self.ime_composition = None;
             self.ime_cancelled = None;
-            return;
+            self.ime_terminal_pending = None;
+            return None;
+        }
+        if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
+            // The native window itself lost focus: no custom editor is eligible this pass, even
+            // if the model still has a text selection and a last-pass geometry rect.
+            self.ime_tracker.observe(viewport, None);
+            return None;
         }
         let Some(rect) = self.ime_pending.take() else {
             // No canvas editor was painted in this pass. A discarded font/layout pass publishes
@@ -2272,23 +2686,32 @@ impl SlideApp {
                 }
             }
             self.ime_tracker.observe(viewport, None);
-            return;
+            return None;
         };
+        if !self.ime_custom_canvas_route(ctx) {
+            // The canvas can still paint behind an opening overlay or a Sorter/Notes Page
+            // reroute, and a forced hidden paint can run after the window lost focus or
+            // visibility. The positive route and the UI wrapper both reject those, so a pending
+            // rect must not republish the custom owner.
+            self.ime_tracker.observe(viewport, None);
+            return None;
+        }
         let Some(st) = self.session.active() else {
             self.ime_interrupt_pending = false;
             self.ime_tracker.observe(viewport, None);
-            return;
+            return None;
         };
         let Some(target) = self.ime_target() else {
             self.ime_interrupt_pending = false;
             self.ime_cancelled = None;
             self.ime_tracker.observe(viewport, None);
-            return;
+            return None;
         };
         if self.ime_viewport != Some(viewport)
             && let Some(old) = self.ime_viewport.replace(viewport)
         {
             self.ime_tracker.end_viewport(old);
+            let _ = self.ime_reset.remove(&old);
         }
         let committed = st.selection.text.as_ref().and_then(|t| deckcraft_engine::cmd::text::ime_surrounding(st, t));
         let mut observation =
@@ -2298,7 +2721,7 @@ impl SlideApp {
         if committed.is_none() {
             observation = observation.unavailable_revision(st.revision);
         }
-        let Some(update) = self.ime_tracker.observe(viewport, Some(observation)) else { return };
+        let update = self.ime_tracker.observe(viewport, Some(observation))?;
         // Clear the interrupt only once it is part of a settled pass's output descriptor. A
         // discarded font/layout pass publishes nothing the platform sees, so keep it pending;
         // that pass is not the boundary at which stale pre-edits become a new generation.
@@ -2314,6 +2737,7 @@ impl SlideApp {
                 self.ime_composition = None;
             }
         }
+        let key = ImeDescriptorKey::new(update.owner, update.context_generation, update.purpose);
         ctx.output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput {
                 owner: update.owner,
@@ -2322,10 +2746,12 @@ impl SlideApp {
                 rect,
                 cursor_rect: rect,
                 should_interrupt_composition: interrupt,
+                reset_request: None,
                 change_cause: update.change_cause,
                 surrounding_text: update.surrounding_text,
             });
         });
+        Some(key)
     }
 
     /// Forget the injected or queued synthetic batch and everything recorded about it. Events
@@ -2535,6 +2961,51 @@ impl SlideApp {
         self.synthetic_focus = focus;
     }
 
+    /// The app shortcuts that still make sense on the empty File/start screen: create, open,
+    /// the command palette, preferences and the File tab itself. Document commands (save, find,
+    /// hyperlink, show, zoom) stay out; none of them can act on a presentation that is not open.
+    fn start_screen_shortcut(key: egui::Key, m: Mods) -> bool {
+        use egui::Key::*;
+        matches!(
+            (key, m.cmd, m.shift, m.alt),
+            (O, true, false, false) | (P, true, true, false) | (Comma, true, false, false) | (F, false, false, true)
+        )
+    }
+
+    /// File-tab navigation and document-free shortcuts, also used on the start screen.
+    fn route_backstage_keys(&mut self, events: Vec<egui::Event>) {
+        if self.backstage.is_none() {
+            return;
+        }
+        // The File tab: its own keys (Esc goes back, arrows walk the side menu) and app
+        // shortcuts (New, Open, Command Palette…); typing, pasting or deleting would edit the
+        // hidden presentation.
+        let start_screen = self.session.active().is_none();
+        for e in events {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                let mods = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command || modifiers.ctrl };
+                let handled = backstage::key(self, key, mods)
+                    // With no presentation the File home only owns the shortcuts that create or
+                    // open one. Borrowing the whole document shortcut table here would also arm
+                    // Save/Save As, hyperlink, find/replace, show and zoom against the empty
+                    // start screen, which is a scope expansion no editing route needs.
+                    || (mods.cmd || mods.alt)
+                        && (!start_screen || Self::start_screen_shortcut(key, mods))
+                        && menus::ui_shortcut(self, key, mods);
+                if handled {
+                    continue;
+                }
+                // Engine shortcuts that don't touch the hidden slide (Ctrl+N).
+                if mods.cmd
+                    && matches!(key, egui::Key::N)
+                    && let Err(e) = self.session.key(key_name(key), mods)
+                {
+                    self.set_status(e.to_string());
+                }
+            }
+        }
+    }
+
     /// Keyboard and clipboard for the slide (when no text field has focus).
     fn keyboard(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
@@ -2558,28 +3029,42 @@ impl SlideApp {
                 _ => {}
             }
         }
-        if ctx.memory(|m| m.focused().is_some()) || self.dialog.as_ref().is_some_and(|d| d.modal()) || self.palette.is_some() {
+        let viewport = self.ime_viewport_or(ctx);
+        if self.session.active().is_none() {
+            // No document: keep slide-editing input suspended, while the start screen's
+            // File-tab navigation and document-free shortcuts remain available.
+            self.suspend_ime_reset(viewport);
+            self.route_ime_controls_only(ctx, &events);
+            if self.palette.is_none() && self.dialog.as_ref().is_none_or(|d| !d.modal()) && ctx.memory(|m| m.focused().is_none()) {
+                self.route_backstage_keys(events);
+            }
+            self.drain_requests();
+            return;
+        }
+        let modal = self.dialog.as_ref().is_some_and(|d| d.modal()) || self.palette.is_some();
+        // While slide text is being edited, the text owns the keyboard (#93). Tab and the arrow
+        // keys move egui's keyboard focus onto ordinary widgets (the window's drag handle, ribbon
+        // buttons), and that stray focus would swallow every later key and end text entry. Let it
+        // go; a real text field or an open menu keeps its keys.
+        if !modal
+            && self.session.active().is_some_and(|d| d.selection.text.is_some())
+            && !ctx.text_edit_focused()
+            && !ctx.any_popup_open()
+            && let Some(id) = ctx.memory(|m| m.focused())
+        {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        if ctx.memory(|m| m.focused().is_some()) || modal {
+            // A stock field/modal/palette owns input now. Retire the custom fence, then visit
+            // controls in raw order; stock text/key events are left for the stock widgets.
+            self.suspend_ime_reset(viewport);
+            self.route_ime_controls_only(ctx, &events);
             return;
         }
         if self.backstage.is_some() {
-            // The File tab: its own keys (Esc goes back, arrows walk the side menu) and app
-            // shortcuts (New, Open, Command Palette…); typing, pasting or deleting would edit the
-            // hidden presentation.
-            for e in events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
-                    let mods = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command || modifiers.ctrl };
-                    if backstage::key(self, key, mods) || !(mods.cmd || mods.alt) || menus::ui_shortcut(self, key, mods) {
-                        continue;
-                    }
-                    // Engine shortcuts that don't touch the hidden slide (Ctrl+N).
-                    if mods.cmd
-                        && matches!(key, egui::Key::N)
-                        && let Err(e) = self.session.key(key_name(key), mods)
-                    {
-                        self.set_status(e.to_string());
-                    }
-                }
-            }
+            self.suspend_ime_reset(viewport);
+            self.route_ime_controls_only(ctx, &events);
+            self.route_backstage_keys(events);
             self.drain_requests();
             return;
         }
@@ -2591,7 +3076,11 @@ impl SlideApp {
             }
         }
         for e in events {
+            // An earlier command in this raw batch may have settled the composition. Request the
+            // replacement at this ordered boundary, before the current event is considered.
+            self.note_settled_composition(ctx);
             match e {
+                egui::Event::ImeResetCompleted { request_id } => self.ime_reset_completed(request_id, ctx),
                 egui::Event::PasteImage(image) => match color_image_png(&image) {
                     Ok(png) => {
                         let params = json!({"name": "Pasted image.png", "data": deckcraft_engine::cmd::base64_encode(&png)});
@@ -2694,7 +3183,26 @@ impl SlideApp {
     }
 
     /// Lay out the whole window.
+    ///
+    /// Every return route, including fonts/layout discards, show mode, modal/Backstage and the
+    /// no-document paths, reaches the same outer reset observation and finalizer below. No early
+    /// route may publish or inspect IME output on its own.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        if !Self::root_viewport_admitted(&ctx) {
+            log::debug!("ignoring SlideApp::ui for render-only viewport {:?}", ctx.viewport_id());
+            return;
+        }
+        self.ui_inner(ui);
+        // The last writer (all panels, dialogs, the custom producer and deferred child windows)
+        // has run. Observe the actual custom descriptor for this pass, then reconcile the reset
+        // lifetime against the actual committed output. This also runs for discarded passes.
+        self.ime_frame_viewport = Some(ctx.viewport_id());
+        let custom = self.observe_ime(&ctx);
+        self.finalize_ime_reset(&ctx, custom);
+    }
+
+    fn ui_inner(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.ime_frame_viewport = Some(ctx.viewport_id());
         self.ime_pending = None;
@@ -2702,7 +3210,6 @@ impl SlideApp {
             // This pass is discarded for the new fonts. The input events were already consumed
             // by egui, so keep them queued for the next frame instead of silently losing them.
             self.requeue_injected_synthetic();
-            self.observe_ime(&ctx);
             return;
         }
         let t0 = now_ms();
@@ -2949,6 +3456,8 @@ mod browsetheme_tests;
 mod compare_tests;
 #[cfg(test)]
 mod eyedropper_tests;
+#[cfg(test)]
+mod field_frame_tests;
 #[cfg(test)]
 mod find_dialog_tests;
 #[cfg(test)]
@@ -3423,6 +3932,39 @@ mod tests {
         assert_eq!(level(&harness), 1);
     }
 
+    /// #93: Tab in an edited list indented the item but handed the keyboard to egui's focus
+    /// cycle: the stray focus (e.g. on the window's drag handle) swallowed every later key, so the
+    /// list could neither be typed into nor continued with Enter.
+    #[test]
+    fn tab_in_an_edited_list_keeps_the_keyboard() {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        let title = harness.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+        harness.state_mut().session.execute("text.edit", &json!({"id": title})).unwrap();
+        harness.event(egui::Event::Text("one".into()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Tab); // Increase List Level
+        harness.run_steps(2);
+        harness.event(egui::Event::Text("sub".into()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter); // continues the list
+        harness.run_steps(2);
+        harness.event(egui::Event::Text("two".into()));
+        harness.run_steps(2);
+        assert_eq!(title_text(harness.state()), "one\nsub\ntwo", "typing after Tab must reach the text");
+        let body = harness.state().session.active().unwrap().doc.slides[0].shapes[0].text.clone().unwrap();
+        let levels: Vec<u8> = body.paragraphs.iter().map(|p| p.level).collect();
+        assert_eq!(levels, vec![0, 1, 1], "Tab indents one level; Enter keeps the level");
+    }
+
     #[test]
     fn home_needs_an_open_presentation() {
         let mut app = SlideApp::new(Session::new(), Services::default());
@@ -3601,6 +4143,41 @@ mod tests {
         assert_ne!(s.ui.brightness, dark_before, "Done keeps the appearance");
         assert_ne!(s.session.prefs.smart_guides, before.smart_guides, "Done keeps smart guides");
         assert_ne!(s.session.prefs.snap_to_grid, before.snap_to_grid, "Done keeps snap to grid");
+    }
+
+    /// About dialog: Close and Cancel each close the dialog.
+    #[test]
+    fn about_dialog_close_and_cancel_close_it() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        harness.state_mut().run("app.about", json!({})).unwrap();
+        harness.run_steps(2);
+        assert!(harness.state().dialog.is_some());
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Cancel")
+            .next()
+            .unwrap_or_else(|| panic!("no Cancel button in About dialog"))
+            .click_accesskit();
+        harness.run_steps(2);
+        assert!(harness.state().dialog.is_none(), "Cancel closes About dialog");
+
+        harness.state_mut().run("app.about", json!({})).unwrap();
+        harness.run_steps(2);
+        assert!(harness.state().dialog.is_some());
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Close")
+            .next()
+            .unwrap_or_else(|| panic!("no Close button in About dialog"))
+            .click_accesskit();
+        harness.run_steps(2);
+        assert!(harness.state().dialog.is_none(), "Close closes About dialog");
     }
 
     fn canvas_harness() -> egui_kittest::Harness<'static, SlideApp> {

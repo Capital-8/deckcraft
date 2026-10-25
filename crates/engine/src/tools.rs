@@ -266,6 +266,9 @@ pub struct ToolState {
     pub edit_points: Option<ShapeId>,
     /// The vertex (path, index) whose control handles show in Edit Points.
     pub edit_vertex: Option<(usize, usize)>,
+    /// The segment (path, index of the vertex ending it) last right-clicked in Edit Points, for
+    /// the segment menu.
+    pub edit_segment: Option<(usize, usize)>,
     /// The point type last chosen for a vertex (path, index, type): handle drags follow it.
     pub vertex_kind: Option<(usize, usize, String)>,
     /// Drawing guides are shown (View › Guides): they can be dragged and shapes snap to them.
@@ -694,7 +697,12 @@ impl Session {
                 // placeholders take the caret straight away like PowerPoint. A click in a selected
                 // table puts the caret in the clicked cell.
                 let table = st.shape(id).is_some_and(|s| matches!(s.kind, ShapeKind::Table(_)));
-                let enter_text = (!toggle && ((text && (selected || is_text_first(st, id))) || (table && selected))).then_some((id, p));
+                // A click on the frame band of a text box selects the box whole, as PowerPoint
+                // does, so it can be moved, duplicated or deleted; only the inside takes the caret.
+                let on_frame = text
+                    && is_text_first(st, id)
+                    && st.shape(id).is_some_and(|s| edit_zone(&xfrm_of(&st.doc, &st.selection, s), p, tol) == EditZone::Frame);
+                let enter_text = (!toggle && !on_frame && ((text && (selected || is_text_first(st, id))) || (table && selected))).then_some((id, p));
                 let ids2 = ids.clone();
                 self.select(|_, sel| {
                     sel.shapes = ids2;
@@ -1243,12 +1251,25 @@ impl Session {
             ) => Some(*id),
             None => None,
         };
+        // Edit Points: the point or else the segment under the pointer picks the menu.
+        let picked = self.tool.editing_points(st).and_then(|eid| st.shape(eid)).map(|sh| match &hit {
+            Some(Hit::Vertex { path, index, .. }) => (Some((*path, *index)), None),
+            Some(Hit::Handle { .. }) => (None, None),
+            _ => (None, cmd::points::segment_at(&st.doc, &st.selection, sh, p, tol * 1.6).map(|(path, seg, _)| (path, seg))),
+        });
         if !id.is_some_and(|id| st.selection.shapes.contains(&id)) {
             self.select(|_, sel| {
                 sel.text = None;
                 sel.cells = None;
                 sel.shapes = id.into_iter().collect();
             })?;
+        }
+        if let Some((vertex, segment)) = picked {
+            // A control handle belongs to the picked point: its menu stays.
+            if !matches!(hit, Some(Hit::Handle { .. })) {
+                self.tool.edit_vertex = vertex;
+            }
+            self.tool.edit_segment = segment;
         }
         let st = self.doc()?;
         Ok(json!({

@@ -88,12 +88,13 @@ menu colours taken from the theme tokens (menu `chrome`, page `card`).
 | Nudge (arrows), fine nudge (Option+arrows) | yes | yes |
 | Shift-constrained move, Option-drag to duplicate | yes | yes |
 | Connector glue and rerouting | yes | yes |
-| Edit points on freeforms | yes | partial: Edit Shape ▸ Edit Points turns any shape into a freeform; drag vertices and their Bézier handles, Ctrl/Cmd-click to add or delete, right-click for Smooth/Straight/Corner Point and Delete Point; no Straight/Curved Segment or Open/Close Path yet |
+| Edit points on freeforms | yes | partial: Edit Shape ▸ Edit Points turns any shape into a freeform; drag vertices and their Bézier handles, Ctrl/Cmd-click to add or delete, right-click a point for Smooth/Straight/Corner Point, Delete Point and Open/Close Path, or a segment for Straight/Curved Segment; no Delete Segment or Add Point in the menu yet |
 | WordArt adjust handles | yellow handles on transformed text | yes, one per adjust when the text has a warp; dragging sets that guide value |
 | Crop handles, crop to shape, aspect ratio | yes | partial |
 | Text caret, selection, double/triple click, drag-select | yes | yes |
 | Exact size/position, lock aspect | yes | yes — Size and Position dialog (height, width, rotation, scale %, lock aspect, position from the top-left), one undo step; ribbon spinners still resize one side at a time |
 | Drag the frame of a text box being edited to move it | yes | yes |
+| Click the frame of a text box or placeholder to select it whole (then move, duplicate or delete it) | yes | yes; a click inside takes the caret |
 | Table cells: caret and selection in the cell, click into another cell, drag row and column borders | yes | yes; no cell-range selection by dragging across cells |
 | Context menus on shapes, slides, text, thumbnails | yes | yes, shorter; a right click selects the shape under the pointer first |
 | Group fill and outline | formats the members | Shape Fill and Shape Outline reach nested members in one undo step; a transparency-only fill edit retains each member's colour (#1079) |
@@ -172,6 +173,7 @@ consistency is open (#73, #56).
 | 2026-10-23 | minor | Shape Fill and Shape Outline (Home and Shape Format): the button applies the last colour picked from its menu, Accent 1 and Text 1 until one is picked. Line weight and dashes are not changed by the button; Font Color and Highlight stay as they were (#1080) |
 | 2026-10-22 | trivial | Group fill and outline commands reach members, including nested groups; selection and single-step undo are preserved (#1079). The existing Arrange / Group checklist score stays D |
 | 2026-10-16 | minor | Export › Change File Type › PNG and the Export… dialog offer a transparent background (#784) |
+| 2026-10-15 | minor | Edit Points: the right-click menu has Straight/Curved Segment on a segment and Open/Close Path on a point |
 | 2026-10-14 | minor | Gray list markers on empty paragraphs while editing; caret keeps the list indent before typing |
 | 2026-10-14 | minor | Community PR wave folded: one row each for Format Shape, Dialogs (41, listed from `dialogs.rs`), Animation Pane (timeline is in), window, Quick Access Toolbar, Format Background, rulers, image paste, context menus, exact size and edit points; estimates re-totalled (~26–46 h) |
 | 2026-10-13 | trivial | Eyedropper in the colour menus (#367) |
@@ -199,6 +201,7 @@ consistency is open (#73, #56).
 | 2026-10-12 | minor | Dragging the frame of a text box being edited moves it, as in PowerPoint |
 | 2026-10-12 | minor | Table cells: caret and selection shown in the edited cell, clicks place the caret in the clicked cell, row and column borders drag to resize |
 | 2026-10-14 | minor | Format Background pane: solid transparency, picture transparency, tile, offset, scale, alignment, mirror, and Apply to All copying a picture. Not a new dialog; the dialog count stays 27 |
+| 2026-10-15 | minor | Clicking the frame of a text box or placeholder selects the box whole instead of starting text entry (#787) |
 | 2026-10-13 | trivial | Editor slide rasters sit on the physical pixel grid (#184) |
 | 2026-10-14 | minor | Copy and paste rich text (HTML: bold, italic, underline) with other apps |
 | 2026-10-13 | minor | Animations ▸ Preview and Animation Pane ▸ Play All play the current slide on the editor canvas |

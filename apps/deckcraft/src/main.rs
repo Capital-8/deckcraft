@@ -255,6 +255,7 @@ fn main() -> eframe::Result {
         "DeckCraft",
         options,
         Box::new(move |cc| {
+            deckcraft_ui_egui::install_ime_pass_hooks(&cc.egui_ctx);
             let mut app = SlideApp::new(Session::new(), services());
             load_prefs(&mut app);
             // AutoRecover: reopen what a previous run left unsaved, then keep it current.

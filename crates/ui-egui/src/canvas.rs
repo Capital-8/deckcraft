@@ -898,34 +898,35 @@ fn pointer(app: &mut SlideApp, ui: &Ui, resp: &egui::Response, xf: Xf) {
     if let Err(e) = r {
         app.set_status(e.to_string());
     }
-    // Cursor.
-    let cursor = match (&app.session.tool.kind, &app.session.tool.hover) {
-        (ToolKind::Shape { .. }, _) => egui::CursorIcon::Crosshair,
-        (ToolKind::TextBox, _) => egui::CursorIcon::Text,
-        (ToolKind::Ink { .. }, _) => egui::CursorIcon::Crosshair,
-        (_, Some(Hit::Resize { handle, .. })) => match handle {
-            0 | 4 => egui::CursorIcon::ResizeNwSe,
-            2 | 6 => egui::CursorIcon::ResizeNeSw,
-            1 | 5 => egui::CursorIcon::ResizeVertical,
-            _ => egui::CursorIcon::ResizeHorizontal,
-        },
-        (_, Some(Hit::Rotate { .. })) => egui::CursorIcon::Alias,
-        (_, Some(Hit::TableColumn { .. })) => egui::CursorIcon::ResizeColumn,
-        (_, Some(Hit::TableRow { .. })) => egui::CursorIcon::ResizeRow,
-        (_, Some(Hit::Adjust { .. } | Hit::Warp { .. } | Hit::LineEnd { .. })) => egui::CursorIcon::PointingHand,
-        (_, Some(Hit::Shape { text: true, .. })) => {
-            if app.session.active().is_some_and(|d| d.selection.text.is_some()) {
-                egui::CursorIcon::Text
-            } else {
-                egui::CursorIcon::Move
+    // Cursor. The Format and Animation Painters override everything: their whole point is to
+    // tell the user the tool is armed and waiting for a click (#830).
+    let painter_armed = app.session.painter.is_some() || app.session.anim_painter.is_some();
+    let cursor = if painter_armed {
+        egui::CursorIcon::Copy
+    } else {
+        match (&app.session.tool.kind, &app.session.tool.hover) {
+            (ToolKind::Shape { .. }, _) => egui::CursorIcon::Crosshair,
+            (ToolKind::TextBox, _) => egui::CursorIcon::Text,
+            (ToolKind::Ink { .. }, _) => egui::CursorIcon::Crosshair,
+            (_, Some(Hit::Resize { id, handle })) => resize_cursor(&app.session, *id, *handle),
+            (_, Some(Hit::Rotate { .. })) => egui::CursorIcon::Alias,
+            (_, Some(Hit::TableColumn { .. })) => egui::CursorIcon::ResizeColumn,
+            (_, Some(Hit::TableRow { .. })) => egui::CursorIcon::ResizeRow,
+            (_, Some(Hit::Adjust { .. } | Hit::Warp { .. } | Hit::LineEnd { .. })) => egui::CursorIcon::PointingHand,
+            (_, Some(Hit::Shape { text: true, .. })) => {
+                if app.session.active().is_some_and(|d| d.selection.text.is_some()) {
+                    egui::CursorIcon::Text
+                } else {
+                    egui::CursorIcon::Move
+                }
             }
+            (_, Some(Hit::Shape { .. } | Hit::Frame { .. })) => egui::CursorIcon::Move,
+            _ => match app.session.tool.guide_drag.map(|g| g.0).or(app.session.tool.guide_hover) {
+                Some(i) if app.session.active().and_then(|d| d.doc.guides.get(i)).is_some_and(|g| g.vertical) => egui::CursorIcon::ResizeHorizontal,
+                Some(_) => egui::CursorIcon::ResizeVertical,
+                None => egui::CursorIcon::Default,
+            },
         }
-        (_, Some(Hit::Shape { .. } | Hit::Frame { .. })) => egui::CursorIcon::Move,
-        _ => match app.session.tool.guide_drag.map(|g| g.0).or(app.session.tool.guide_hover) {
-            Some(i) if app.session.active().and_then(|d| d.doc.guides.get(i)).is_some_and(|g| g.vertical) => egui::CursorIcon::ResizeHorizontal,
-            Some(_) => egui::CursorIcon::ResizeVertical,
-            None => egui::CursorIcon::Default,
-        },
     };
     if resp.hovered() {
         ui.ctx().set_cursor_icon(cursor);
@@ -1227,7 +1228,16 @@ fn context_menu(app: &mut SlideApp, resp: &egui::Response) {
     resp.context_menu(|ui| {
         let editing = app.session.active().and_then(|d| app.session.tool.editing_points(d).and_then(|id| d.shape(id).cloned()));
         if let Some(sh) = editing {
-            if let Some((path, index)) = app.session.tool.edit_vertex {
+            if let Some((path, index)) = app.session.tool.edit_segment {
+                let cur = deckcraft_engine::cmd::points::segment_kind_of(&sh, path, index);
+                for (l, k) in [("Straight Segment", "straight"), ("Curved Segment", "curved")] {
+                    if ui.radio(cur == Some(k), l).clicked() {
+                        let _ = app.run("shape.segmentType", json!({"path": path, "segment": index, "type": k}));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+            } else if let Some((path, index)) = app.session.tool.edit_vertex {
                 let cur = deckcraft_engine::cmd::points::kind_of(&sh, path, index);
                 for (l, k) in [("Smooth Point", "smooth"), ("Straight Point", "straight"), ("Corner Point", "corner")] {
                     if ui.radio(cur == Some(k), l).clicked() {
@@ -1237,6 +1247,16 @@ fn context_menu(app: &mut SlideApp, resp: &egui::Response) {
                 }
                 if ui.button("Delete Point").clicked() {
                     let _ = app.run("shape.deletePoint", json!({"path": path, "index": index}));
+                    app.session.tool.edit_vertex = None;
+                    ui.close();
+                }
+                let (label, id) = match deckcraft_engine::cmd::points::closed_at(&sh, path, index) {
+                    Some(false) => ("Close Path", "shape.closePath"),
+                    _ => ("Open Path", "shape.openPath"),
+                };
+                if ui.button(label).clicked() {
+                    let _ = app.run(id, json!({"path": path, "index": index}));
+                    // The points are numbered from the new start now.
                     app.session.tool.edit_vertex = None;
                     ui.close();
                 }
@@ -1492,16 +1512,156 @@ fn grid_fits(span: f32, step: f32) -> bool {
     span.is_finite() && span > 0.0 && step >= 1.0 && span / step <= 800.0
 }
 
+/// The resize cursor for `handle` of shape `id`: the handle's resize axis is computed in the
+/// shape's own space and mapped through its transform, so a rotated or flipped shape shows the
+/// diagonal that matches where the drag actually goes (#745). Without a transform the mapping
+/// reduces to the classic NW/NE/E/SE/S/SW/W assignment.
+fn resize_cursor(session: &deckcraft_engine::Session, id: deckcraft_model::ShapeId, handle: u8) -> egui::CursorIcon {
+    // The resize handles are drawn from the shape's effective box (a placeholder inherits it
+    // from its layout), so the cursor follows the same one.
+    let Some(d) = session.active() else { return egui::CursorIcon::Default };
+    let Some(sh) = d.shape(id) else { return egui::CursorIcon::Default };
+    let x = deckcraft_engine::cmd::xfrm_of(&d.doc, &d.selection, sh);
+    // The resize axis in the shape's own coordinates, as (dx, dy) from the box centre toward
+    // the handle. Corners resize along the diagonal, edge handles along their edge. The
+    // direction is normalised - the diagonal at 45 degrees whatever the shape's proportions -
+    // so a wide rectangle still shows a diagonal cursor on its corners.
+    let (dx, dy): (f64, f64) = match handle {
+        0 => (-1.0, -1.0),
+        1 => (0.0, -1.0),
+        2 => (1.0, -1.0),
+        3 => (1.0, 0.0),
+        4 => (1.0, 1.0),
+        5 => (0.0, 1.0),
+        6 => (-1.0, 1.0),
+        _ => (-1.0, 0.0),
+    };
+    // Map through the linear part of the transform (rotation, flips): two points along the
+    // axis, the difference is the slide-space direction.
+    let centre = Point::new(x.x + x.w / 2.0, x.y + x.h / 2.0);
+    let a = x.affine();
+    let p0 = a * centre;
+    let p1 = a * Point::new(centre.x + dx, centre.y + dy);
+    let v = p1 - p0;
+    if !v.x.is_finite() || !v.y.is_finite() || (v.x.abs() < 1e-12 && v.y.abs() < 1e-12) {
+        return egui::CursorIcon::Default;
+    }
+    // Angle in [0, 180): 0° = right (horizontal), 45° = down-right (NW-SE), 90° = down
+    // (vertical), 135° = down-left (NE-SW). Pick the closest of the four.
+    let mut deg = v.y.atan2(v.x).to_degrees();
+    if deg < 0.0 {
+        deg += 180.0;
+    }
+    if (22.5..67.5).contains(&deg) {
+        egui::CursorIcon::ResizeNwSe
+    } else if (67.5..112.5).contains(&deg) {
+        egui::CursorIcon::ResizeVertical
+    } else if (112.5..157.5).contains(&deg) {
+        egui::CursorIcon::ResizeNeSw
+    } else {
+        egui::CursorIcon::ResizeHorizontal
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use std::sync::Arc;
+
     use deckcraft_engine::Session;
     use egui::{Event, Modifiers, MouseWheelUnit, Pos2, TouchPhase, pos2, vec2};
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::{Services, SlideApp};
+
+    /// #745: the resize cursor follows the handle's on-screen diagonal. A 45°-rotated shape's
+    /// NW corner sits at the top-right of the screen, where the drag axis is NE-SW — the old
+    /// fixed handle-to-cursor mapping showed NW-SE there.
+    #[test]
+    fn resize_cursor_tracks_rotation() {
+        let mut s = Session::with_new();
+        // A square shape: the NW handle's diagonal is at 45° unrotated, so each 45° of shape
+        // rotation cleanly moves the cursor to the next of the four resize directions.
+        let id = s.execute("shape.insert", &serde_json::json!({"preset": "rect", "rect": [100.0, 100.0, 100.0, 100.0]})).unwrap()["id"]
+            .as_u64()
+            .unwrap() as u32;
+        let sid = deckcraft_model::ShapeId(id);
+        // Unrotated: the NW handle (0) drags the NW-SE diagonal.
+        assert_eq!(resize_cursor(&s, sid, 0), egui::CursorIcon::ResizeNwSe);
+        assert_eq!(resize_cursor(&s, sid, 4), egui::CursorIcon::ResizeNwSe);
+        assert_eq!(resize_cursor(&s, sid, 2), egui::CursorIcon::ResizeNeSw);
+        assert_eq!(resize_cursor(&s, sid, 6), egui::CursorIcon::ResizeNeSw);
+        assert_eq!(resize_cursor(&s, sid, 1), egui::CursorIcon::ResizeVertical);
+        assert_eq!(resize_cursor(&s, sid, 3), egui::CursorIcon::ResizeHorizontal);
+        // 45° rotation: the NW corner's drag axis rotates 45° with the shape — it is now vertical.
+        {
+            let doc = s.doc_mut().unwrap();
+            let pres = Arc::make_mut(&mut doc.doc);
+            let slide = Arc::make_mut(&mut pres.slides[0]);
+            if let Some(sh) = slide.shapes.iter_mut().find(|x| x.id == sid)
+                && let Some(x) = sh.xfrm.as_mut()
+            {
+                x.rot = 45.0;
+            }
+        }
+        assert_eq!(resize_cursor(&s, sid, 0), egui::CursorIcon::ResizeVertical, "45°: NW handle drags vertically");
+        assert_eq!(resize_cursor(&s, sid, 2), egui::CursorIcon::ResizeHorizontal, "45°: NE handle drags horizontally");
+        // 90° rotation: the NW corner is at the top-right; the drag axis is NE-SW.
+        {
+            let doc = s.doc_mut().unwrap();
+            let pres = Arc::make_mut(&mut doc.doc);
+            let slide = Arc::make_mut(&mut pres.slides[0]);
+            if let Some(sh) = slide.shapes.iter_mut().find(|x| x.id == sid)
+                && let Some(x) = sh.xfrm.as_mut()
+            {
+                x.rot = 90.0;
+            }
+        }
+        assert_eq!(resize_cursor(&s, sid, 0), egui::CursorIcon::ResizeNeSw, "90°: the diagonal is NE-SW");
+        assert_eq!(resize_cursor(&s, sid, 2), egui::CursorIcon::ResizeNwSe, "90°: NE diagonal is NW-SE");
+        assert_eq!(resize_cursor(&s, sid, 1), egui::CursorIcon::ResizeHorizontal, "90°: the top edge is horizontal");
+    }
+
+    /// #745: a corner handle shows a diagonal cursor whatever the shape's proportions. The
+    /// corner's direction is the diagonal, not the line to the box's centre, so a wide
+    /// rectangle's NW corner still drags along the NW-SE diagonal.
+    #[test]
+    fn a_wide_shape_keeps_its_corner_cursors_diagonal() {
+        let mut s = Session::with_new();
+        let id = s.execute("shape.insert", &serde_json::json!({"preset": "rect", "rect": [100.0, 100.0, 400.0, 80.0]})).unwrap()["id"]
+            .as_u64()
+            .unwrap() as u32;
+        let sid = deckcraft_model::ShapeId(id);
+        assert_eq!(resize_cursor(&s, sid, 0), egui::CursorIcon::ResizeNwSe, "the NW corner drags NW-SE");
+        assert_eq!(resize_cursor(&s, sid, 4), egui::CursorIcon::ResizeNwSe, "the SE corner drags NW-SE");
+        assert_eq!(resize_cursor(&s, sid, 2), egui::CursorIcon::ResizeNeSw, "the NE corner drags NE-SW");
+        assert_eq!(resize_cursor(&s, sid, 6), egui::CursorIcon::ResizeNeSw, "the SW corner drags NE-SW");
+        // The edges keep their own cursors.
+        assert_eq!(resize_cursor(&s, sid, 1), egui::CursorIcon::ResizeVertical, "the top edge drags vertically");
+        assert_eq!(resize_cursor(&s, sid, 3), egui::CursorIcon::ResizeHorizontal, "the right edge drags horizontally");
+    }
+
+    /// #745: a placeholder that inherits its box from the layout still shows a resize cursor.
+    /// Its handles are drawn from the inherited box, so the cursor follows that one.
+    #[test]
+    fn a_placeholder_that_inherits_its_box_has_a_resize_cursor() {
+        let s = Session::with_new();
+        let st = s.doc().unwrap();
+        let ph = st
+            .current_slide()
+            .unwrap()
+            .shapes
+            .iter()
+            .find(|sh| sh.xfrm.is_none() && sh.ph.is_some())
+            .expect("the new slide has a placeholder without a box of its own")
+            .id;
+        assert_eq!(resize_cursor(&s, ph, 0), egui::CursorIcon::ResizeNwSe, "the NW corner drags NW-SE");
+        assert_eq!(resize_cursor(&s, ph, 2), egui::CursorIcon::ResizeNeSw, "the NE corner drags NE-SW");
+        assert_eq!(resize_cursor(&s, ph, 1), egui::CursorIcon::ResizeVertical, "the top edge drags vertically");
+    }
 
     fn harness() -> Harness<'static, SlideApp> {
         let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
@@ -1858,6 +2018,44 @@ mod tests {
         assert!((t.cols[0] - 240.0).abs() < 0.5 && (t.cols[1] - 160.0).abs() < 0.5, "{:?}", t.cols);
     }
 
+    fn right_click(h: &mut Harness<'_, SlideApp>, pos: Pos2) {
+        h.event(Event::PointerMoved(pos));
+        h.step();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(2);
+    }
+
+    /// In Edit Points, right-clicking a segment offers Straight/Curved Segment and right-clicking
+    /// a point offers Open Path, then Close Path once the outline is open.
+    #[test]
+    fn edit_points_menu_sets_segment_types_and_opens_the_path() {
+        let mut h = harness();
+        h.state_mut().run("slide.layout", json!({"layout": "blank"})).unwrap();
+        h.state_mut().run("shape.insert", json!({"preset": "rect", "rect": [200, 150, 300, 200]})).unwrap();
+        h.state_mut().run("shape.editPoints", json!({"on": true})).unwrap();
+        h.run_steps(3);
+        let q = |h: &mut Harness<'_, SlideApp>| h.state_mut().session.execute("shape.points", &json!({})).unwrap();
+        // The middle of the right edge: the segment ending at point 2.
+        let p = screen(h.state(), 500.0, 250.0);
+        right_click(&mut h, p);
+        h.get_by_label("Curved Segment").click();
+        h.run_steps(3);
+        assert_eq!(q(&mut h)["segments"][0], json!(["straight", "straight", "curved", "straight"]));
+        // The bottom-right corner: Open Path breaks the outline there.
+        let p = screen(h.state(), 500.0, 350.0);
+        right_click(&mut h, p);
+        h.get_by_label("Open Path").click();
+        h.run_steps(3);
+        assert_eq!(q(&mut h)["paths"][0].as_array().map(Vec::len), Some(5));
+        right_click(&mut h, p);
+        h.get_by_label("Close Path").click();
+        h.run_steps(3);
+        assert_eq!(q(&mut h)["paths"][0].as_array().map(Vec::len), Some(4));
+    }
+
     #[test]
     fn grid_step_follows_spacing_and_rejects_unusable_values() {
         let step = super::grid_line_step(72.0, 0.5).unwrap_or(0.0);
@@ -1868,6 +2066,37 @@ mod tests {
         assert!(super::grid_line_step(1_000.0, 1.0).is_none());
         assert!(super::grid_line_step(6.0, 0.0).is_none());
         assert!(super::grid_line_step(6.0, 0.1).is_none(), "a 6 pt grid at 10% zoom is finer than one screen point");
+    }
+
+    /// #830: when the Format or Animation Painter is armed, the cursor shows the copy icon so the
+    /// user can see the tool is waiting for a click.
+    #[test]
+    fn format_painter_sets_the_cursor() {
+        let mut h = harness();
+        // Hover over the canvas so the pointer function runs and sets the cursor.
+        h.hover_at(egui::pos2(600.0, 400.0));
+        h.run_steps(2);
+        let before = h.output().platform_output.cursor_icon;
+        assert_ne!(before, egui::CursorIcon::Copy, "no painter is armed yet");
+        // Arming the format painter overrides the cursor to Copy (#830).
+        h.state_mut().session.painter = Some((Default::default(), false));
+        h.run_steps(3);
+        let after = h.output().platform_output.cursor_icon;
+        assert_eq!(after, egui::CursorIcon::Copy, "the format painter arms the Copy cursor");
+    }
+
+    /// #830: the Animation Painter arms the same cursor.
+    #[test]
+    fn animation_painter_sets_the_cursor() {
+        let mut h = harness();
+        h.hover_at(egui::pos2(600.0, 400.0));
+        h.run_steps(2);
+        let before = h.output().platform_output.cursor_icon;
+        assert_ne!(before, egui::CursorIcon::Copy, "no painter is armed yet");
+        h.state_mut().session.anim_painter = Some((vec![], false));
+        h.run_steps(3);
+        let after = h.output().platform_output.cursor_icon;
+        assert_eq!(after, egui::CursorIcon::Copy, "the animation painter arms the Copy cursor");
     }
 }
 

@@ -1,11 +1,33 @@
 # DeckCraft: egui 0.37 migration plan
 
-> **Status:** implementation in progress, 2026-10-24. Source edits are in the dirty migration
-> worktree; build, test, benchmark, commit and publication remain with the parent's managed
-> `task.py` workflow and its separate publication approval.
+## Current qualification — 2026-10-25
+
+The local candidate reconciles `main` through
+`38d2ade2b77de39c0e06278ddfd44d1082ff80a8` with the migration base
+`770f4653bff0700b33d8475181e168da90a7ad4f`. All five source files listed in the
+historical review below belong in the review commit. The source passed full CI
+job `egui037-deckcraft-regression-ci-20261025-0445`: all eight stages, with 1,991
+test passes, zero failures and six ignored tests across 60 test summaries.
+
+The final regression additions exercise the Notes accessibility toggle, no-document
+Open/Actions/Preferences/File-menu shortcuts, ignored document-only shortcuts, and
+typing/IME isolation. Earlier validation failures and source-completeness warnings
+below describe retained history; the current review packet records the complete
+commit and its parents. Native/browser workflows and paired app performance remain
+open. No publication or merge is authorized by these results.
+
+## Historical planning and review records
+
+> **Status:** final current local review recorded, 2026-10-25. The reviewed source is the dirty
+> migration union in the worktree below: local base `770f4653bff0700b33d8475181e168da90a7ad4f`
+> plus tracked edits and five untracked source files. That base HEAD alone is **not** a qualified
+> release; any eventual commit must include all five untracked files (see the final status section).
+> Build, test, benchmark, commit and publication remain with the parent's managed `task.py`
+> workflow and its separate publication approval.
 > **Implementation checkout:** `/home/codex/work/CraftApps/egui037-migration-20261022/deckcraft-implementation`
-> at `9aef21e627cb447dd2180cd804db85343e73e5cf` (dirty migration worktree). The historical
-> planning baseline `b47195feec0f0fe4220d8943ad1c8add5dad8072` is retained only as review history.
+> at local base `770f4653bff0700b33d8475181e168da90a7ad4f` (dirty union). The earlier dirty
+> implementation snapshot `9aef21e627cb447dd2180cd804db85343e73e5cf` and the historical planning
+> baseline `b47195feec0f0fe4220d8943ad1c8add5dad8072` are retained only as review history.
 > **Target:** egui-family `0.37.0`. The stock crates.io release is a local comparison experiment,
 > not a staged consumer release; production uses reviewed, published, immutable storytold full SHAs
 > for the complete egui family and winit. Publication of any pin requires a separate, explicit
@@ -13,7 +35,9 @@
 > **Review:** a fresh adversarial review of this plan, then a separate adversarial review of each
 > implementation PR, is required before landing. This revision resolves the independent review in
 > `plan-reviews/deckcraft-v1.md`: the lifecycle phase model, screenshot ownership, font feature,
-> E21b/PRIMARY gaps, production pin provenance and performance sampling have been corrected.
+> E21b/PRIMARY gaps, production pin provenance and performance sampling have been corrected. The
+> final current local review is `final-landing/deck-final-review0045.txt`; its disposition is
+> recorded in the final status section.
 
 This plan is app-specific to DeckCraft. It is grounded in the baseline source and in the 0.37
 sources available in the migration workspace; it is not a generic template. The repository rules
@@ -64,7 +88,7 @@ DeckCraft remain `craft-pdf` and the `krilla` patch at their current immutable r
 
 | Item | Baseline |
 |---|---|
-| DeckCraft | implementation checkout `9aef21e627cb447dd2180cd804db85343e73e5cf` (dirty); historical planning baseline `b47195feec0f0fe4220d8943ad1c8add5dad8072` |
+| DeckCraft | baseline snapshot of this plan `9aef21e627cb447dd2180cd804db85343e73e5cf` (superseded dirty snapshot); historical planning baseline `b47195feec0f0fe4220d8943ad1c8add5dad8072`. Current reviewed local base is `770f4653bff0700b33d8475181e168da90a7ad4f` (dirty union, not a qualified commit) |
 | `Cargo.lock` | format 4; `egui`/`eframe`/`egui-wgpu`/`egui-winit`/`egui_kittest`/`epaint`/`ecolor`/`emath`/`epaint_default_fonts` all `0.36.2` |
 | winit | `0.30.13` from crates.io (`a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d`) |
 | wgpu | `30.0.1` in this lock. Upstream egui `0.37.0` holds `30.0.0` (its `Cargo.toml` comment keeps that version for `wasm-bindgen-futures`); they are semver-compatible but a different lock, so the wasm dependency set must be re-verified after the bump |
@@ -1156,12 +1180,14 @@ clamp-only shortcut.
    differ by OS. A curated panic-policy screen test may require replacing decorative glyphs or
    adding an allowed fallback font; do not introduce tofu in production silently. The current
    128 MiB limit is per face; add and test an aggregate budget before calling `UiFonts` bounded.
-6. **IME delete-surrounding and outgoing text.** `DeleteSurrounding` already exists in 0.36.2 and
-   is currently ignored; the custom slide-text path has no range-delete API today. E21b is a new
-   prerequisite: the candidate has no logical surrounding text in `IMEOutput` and no Wayland
-   delivery. Either implement and test both (including DeckCraft's `canvas::ime_output` model
-   adapter), or record the gap as blocking; do not claim E21/E21b support from event translation
-   alone.
+6. **IME delete-surrounding and outgoing text (historical plan gap).** `DeleteSurrounding` already
+   existed in 0.36.2 and was ignored at plan time; the custom slide-text path had no range-delete
+   API then. E21b was a new prerequisite: the plan-time candidate had no logical surrounding text
+   in `IMEOutput` and no Wayland delivery. **Final local status (2026-10-25):** the reviewed source
+   now publishes `surrounding_text: update.surrounding_text` (`crates/ui-egui/src/lib.rs:2751`) and
+   handles both `DeleteSurrounding` forms (`crates/ui-egui/src/lib.rs:2540-2549`), so that source
+   gap is closed. Native/Wayland delivery and all IME qualification remain unproven; do not claim
+   E21/E21b acceptance from source presence alone.
 7. **`ui.screenshot` on a hidden/minimized window.** A pending screenshot/`RequestPaintWhileHidden`
    forces a UI pass; the weak-slot design needs a real native test (and Windows clone) for capture
    geometry, no late file/reply, bounded memory and input handling. Offscreen kittest is not proof
@@ -1384,3 +1410,72 @@ fresh independent review. No new native IME or performance acceptance is claimed
 The CI font-pin preflight's CRAFT_FONTS_REF is corrected to the same reviewed b076417b5880bd4154bd22f00695b1d28c6bea83
 used by gate/FreeBSD/release; the old43913056 value remains only the historical pending comparator.
 This is a separate one-line workflow correction, not a dependency/lock or font-asset change.
+
+## Final current local review status — 2026-10-25
+
+This section records the final local state after
+`/home/codex/work/ssd2/task-evidence/egui037-migration-20261022/final-landing/deck-final-review0045.txt`.
+Earlier sections remain the historical plan and implementation amendments; where they describe an
+earlier snapshot or an open plan-time gap, this section is the current local status.
+
+### Source identity (uncommitted, not a qualified commit)
+
+- Local base HEAD: `770f4653bff0700b33d8475181e168da90a7ad4f`.
+- Reviewed source: that base plus tracked edits and **five untracked source files**, which must be
+  included in any eventual commit:
+  `crates/engine/tests/show_paragraph_builds.rs`,
+  `crates/format/src/rtf.rs`,
+  `crates/pptx/tests/chart_data_labels.rs`,
+  `crates/ui-egui/src/field_frame_tests.rs` and
+  `crates/ui-egui/src/preferences_tests.rs`.
+- `crates/format/src/lib.rs` declares `pub mod rtf;` and the UI modules declare the two
+  `*_tests` files, so a clean checkout or archive of `770f4653` alone cannot build or run the
+  reviewed source. `770f4653` is a local base for the dirty union, **not** a qualified commit.
+- Focused reviewed hashes: `crates/ui-egui/src/thumbs.rs` `f21c09ba…`,
+  `crates/ui-egui/src/ime_tests.rs` `c433b847…`, `crates/ui-egui/src/lib.rs` `df8b48ba…`,
+  `Cargo.toml` `467ccc3e…`, `Cargo.lock` `33a3d3d8…`.
+
+### Final pins
+
+| Dependency | Final local pin | Note |
+|---|---|---|
+| egui family (`egui`, `eframe`, `egui-winit`, `egui-wgpu`, `epaint`, `ecolor`, `emath`, `epaint_default_fonts`, `egui_kittest`, …) | `storytold/egui` `6d518fc799681571963842f95b55a6b68431b15a` | `Cargo.toml` patch entries and `Cargo.lock` agree |
+| winit | `storytold/winit` `a517b3846ee8457d84ee4975110bfda6797c44dc` | `Cargo.toml` patch entry |
+| craft-media | `storytold/craft-libs` `f0ad6c1e1d297908915f4be315b0fcfc9be7b5d4` | intentionally separate craft-libs pin |
+| craft-pdf / krilla patch | `storytold/craft-libs` `9f75d3dc19b4b514c4f3d4847ed1ec1b0e86b4ef` | intentionally separate craft-libs pin |
+
+The craft-media `f0ad6c1e…` and craft-pdf `9f75d3dc…` pins are intentionally separate from the
+egui/winit pins; they are **not** required to move to `25da1314…`. The font inputs bundled by
+`epaint_default_fonts` at `6d518fc7…` are byte-identical to those at the superseded `173cc737…`
+reviewed source (all files in `crates/epaint_default_fonts/fonts/` hash the same), so
+`ATTRIBUTION.md` now cites the exact current source URL without changing provenance.
+
+### Review disposition
+
+- **P1 (source completeness, blocking publication):** the five untracked files above are required
+  source. The dirty worktree can build while a clean checkout of `770f4653` cannot. Not fixed by
+  this documentation edit and not claimed as qualified.
+- **P2 (documentation/attribution):** header/base identity, the stale plan-time IME gap, the final
+  pins and the `ATTRIBUTION.md` font source URL are reconciled in this revision.
+- **P2 (IME completion race):** an unproven race risk where an old `ImeResetCompleted` could clear
+  `Awaiting` for a changed destination before the finalizer. No failing reproduction exists. No
+  production or test code was changed speculatively; the risk stays unqualified.
+- **P3 (`thumbs_scroll` contract):** the comment advertises the value for the control channel while
+  `#[serde(skip)]` keeps it out of `ui.inspect`; only tests read it directly. Recorded as a
+  comment/dead-contract defect, not fixed here.
+- **P3 (unreachable IME fixture):** the `Suspended { request: Some(…) }` test state is not produced
+  by any production constructor, so it gives limited assurance. Not fixed here.
+- The `ScrollArea::clamped_offset()` and `IMEOutput` Option handling reviews found no concrete
+  production defect; thumbnail behaviour coverage (opening at a non-zero slide, wheel/drag,
+  smooth scrolling) remains incomplete.
+
+### Validation actually performed
+
+- Retained full CI run 2325 reached fmt, `pdf-deps` and clippy PASS, then exhausted the 8 GiB
+  reservation during test compilation. It does not establish that the current tests compile or
+  pass.
+- Full CI, test execution, WASM, native/browser IME, real GUI behaviour, clean-checkout build and
+  performance were **not** passed.
+- No Cargo, build, test, fmt, clippy, VM or resource command was run for this documentation edit.
+- Publication, commit, push, PR, review comment and merge remain outstanding and require separate
+  explicit human approval.

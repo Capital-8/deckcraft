@@ -1194,7 +1194,8 @@ fn animation(app: &mut SlideApp, ui: &mut Ui) {
     let _ = paint_anim_tile;
 }
 
-/// Review › Compare: the revised copy's slide-level changes; click to go there, Accept to take it.
+/// Review › Compare: the revised copy's slide-level changes; click to go there, Accept to take it,
+/// Reject to drop it.
 fn revisions(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Ok(v) = app.session.execute("review.revisions", &json!({})) else {
@@ -1215,9 +1216,14 @@ fn revisions(app: &mut SlideApp, ui: &mut Ui) {
         }
         return;
     }
-    if ui.button(format!("Accept All ({})", changes.len())).clicked() {
-        run(app, "review.accept", json!({"all": true}));
-    }
+    ui.horizontal(|ui| {
+        if ui.button(format!("Accept All ({})", changes.len())).clicked() {
+            run(app, "review.accept", json!({"all": true}));
+        }
+        if ui.button(format!("Reject All ({})", changes.len())).clicked() {
+            run(app, "review.reject", json!({"all": true}));
+        }
+    });
     ui.separator();
     for (i, c) in changes.iter().enumerate() {
         let slide = c["slide"].as_u64().unwrap_or(0);
@@ -1236,6 +1242,9 @@ fn revisions(app: &mut SlideApp, ui: &mut Ui) {
                     run(app, "slide.go", json!({"index": (slide as usize).min(max)}));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Reject").clicked() {
+                        run(app, "review.reject", json!({"index": i}));
+                    }
                     if ui.small_button("Accept").clicked() {
                         run(app, "review.accept", json!({"index": i}));
                     }

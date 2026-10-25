@@ -373,7 +373,7 @@ fn select_slides(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn hide(s: &mut Session, p: &Value) -> Result<Value> {
-    let targets: Vec<usize> = match usize_param(p, "index") {
+    let targets: Vec<usize> = match opt_usize_param(p, "index", "slide.hide")? {
         Some(i) => vec![i],
         None => {
             let st = s.doc()?;
@@ -442,7 +442,7 @@ pub fn apply_layout(doc: &mut Presentation, index: usize, layout: LayoutId) -> R
 
 fn set_layout(s: &mut Session, p: &Value) -> Result<Value> {
     let key = p.get("layout").cloned().ok_or_else(|| bad("slide.layout", "missing `layout`"))?;
-    let targets: Vec<usize> = match usize_param(p, "index") {
+    let targets: Vec<usize> = match opt_usize_param(p, "index", "slide.layout")? {
         Some(i) => vec![i],
         None => {
             let st = s.doc()?;

@@ -17,6 +17,7 @@ fn harness(session: Session) -> egui_kittest::Harness<'static, SlideApp> {
         },
         SlideApp::new(session, Services::default()),
     );
+    crate::install_ime_pass_hooks(&h.ctx);
     // The app keeps requesting repaints, so step frames instead of run().
     h.run_steps(3);
     h
@@ -140,9 +141,10 @@ fn settled_composition_drops_queued_preedit_and_same_batch_commit() {
     let interrupted = h.output().platform_output.ime.clone().expect("still editing");
     assert!(interrupted.should_interrupt_composition, "the settled platform composition is interrupted");
     assert!(h.state().ime_cancelled.is_none(), "the settled pass published the interrupt and retired the tombstone");
+    let reset = interrupted.reset_request.expect("the settled pass carries the opaque reset request");
 
-    // A real new composition after the published interrupt is accepted.
-    h.event(preedit("新"));
+    // A real new composition is admitted only by the exact ordered completion.
+    h.input_mut().events.extend([reset_completed(reset), preedit("新")]);
     h.run_steps(1);
     assert_eq!(title_text(h.state()), "日本新", "a legitimate new pre-edit starts a new generation");
     assert!(h.state().session.active().unwrap().composition.is_some());
@@ -171,10 +173,11 @@ fn stale_commit_in_the_settling_batch_is_rejected_and_a_later_direct_commit_is_a
     assert_eq!(title_text(h.state()), "日本", "the same-batch commit does not type the conversion twice");
     assert_eq!(undo_len(h.state()), undo0 + 1);
     assert!(h.state().ime_cancelled.is_none(), "the published interrupt retired the tombstone");
+    let reset = h.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request).expect("the settled pass carries the opaque reset request");
 
     // A direct commit with no pre-edit (a real IME's punctuation/full-width character path)
-    // arrives after the boundary and is accepted.
-    h.event(Event::Ime(ImeEvent::Commit("。".into())));
+    // arrives after the exact ordered completion and is accepted.
+    h.input_mut().events.extend([reset_completed(reset), Event::Ime(ImeEvent::Commit("。".into()))]);
     h.run_steps(1);
     assert_eq!(title_text(h.state()), "日本。", "a later commit-only is not lost");
 }
@@ -253,7 +256,7 @@ fn accepted_no_descriptor_pass_retires_the_settled_tombstone() {
     ctx.run_ui(egui::RawInput::default(), |ui| {
         let will_discard = ui.ctx().will_discard();
         app.ime_pending = None;
-        app.observe_ime(ui.ctx());
+        let _ = app.observe_ime(ui.ctx());
         seen.lock().unwrap().push((will_discard, app.ime_cancelled.is_some(), app.ime_interrupt_pending));
     })
     .drop_without_applying_deltas();
@@ -912,6 +915,7 @@ fn cleared_preedit_pointer_interruption_rejects_later_delete_and_terminal_commit
                 Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
             ]);
             h.run_steps(1);
+            let reset = published_reset(&h);
             let t = h.state().session.active().unwrap().selection.text.as_ref().expect("the real pointer kept text editing");
             assert_eq!((t.anchor, t.caret), ((0, 1), (0, 1)), "the actual pointer moved the caret");
             h.input_mut().events.push(Event::PointerButton {
@@ -926,9 +930,9 @@ fn cleared_preedit_pointer_interruption_rejects_later_delete_and_terminal_commit
                 h.run_steps(1);
                 assert_eq!(title_text(h.state()), "abcd", "the separately delivered old deletion is refused");
             }
-            h.input_mut().events.extend([Event::Ime(ImeEvent::Commit("X".into())), preedit("Y")]);
+            h.input_mut().events.extend([Event::Ime(ImeEvent::Commit("X".into())), reset_completed(reset), preedit("Y")]);
             h.run_steps(1);
-            // Old terminal is refused, then the new composition in that same batch is valid.
+            // Old terminal is refused, the exact completion admits the suffix in that same batch.
             assert_eq!(title_text(h.state()), "aYbcd");
             assert!(
                 !h.output().platform_output.ime.as_ref().unwrap().should_interrupt_composition,
@@ -955,6 +959,7 @@ fn cleared_preedit_key_interruption_rejects_a_terminal_in_a_later_batch() {
         let undo = undo_len(h.state());
         h.key_down(egui::Key::ArrowLeft);
         h.run_steps(1);
+        let reset = published_reset(&h);
         h.key_up(egui::Key::ArrowLeft);
         h.run_steps(2);
         h.input_mut().events.extend([pending_terminal_delete(bytes), Event::Ime(ImeEvent::Commit("X".into()))]);
@@ -963,9 +968,9 @@ fn cleared_preedit_key_interruption_rejects_a_terminal_in_a_later_batch() {
         assert_eq!((t.anchor, t.caret), ((0, 3), (0, 3)));
         assert_eq!(title_text(h.state()), "abcd");
         assert_eq!(undo_len(h.state()), undo);
-        h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+        h.input_mut().events.extend([reset_completed(reset), Event::Ime(ImeEvent::Commit("Y".into()))]);
         h.run_steps(1);
-        assert_eq!(title_text(h.state()), "abcYd", "the later direct commit is new input");
+        assert_eq!(title_text(h.state()), "abcYd", "the exact completion admits the later direct commit");
     }
 }
 
@@ -985,7 +990,9 @@ fn cleared_preedit_target_replacement_rejects_later_terminal_mutations() {
         let doc = h.state().session.active().unwrap().doc.clone();
         // Actual production target-selection command, in a separate pass before the terminal.
         h.state_mut().run("text.edit", json!({"id": second, "at": [0, 1]})).unwrap();
-        h.run_steps(3);
+        h.run_steps(1);
+        let reset = published_reset(&h);
+        h.run_steps(2);
         h.event(pending_terminal_delete(bytes));
         h.run_steps(1);
         h.event(Event::Ime(ImeEvent::Commit("X".into())));
@@ -995,7 +1002,7 @@ fn cleared_preedit_target_replacement_rejects_later_terminal_mutations() {
         assert_eq!(undo_len(h.state()), undo);
         let t = h.state().session.active().unwrap().selection.text.as_ref().unwrap();
         assert_eq!((t.shape.0, t.anchor, t.caret), (second, (0, 1), (0, 1)));
-        h.event(preedit("Y"));
+        h.input_mut().events.extend([reset_completed(reset), preedit("Y")]);
         h.run_steps(1);
         h.event(Event::Ime(ImeEvent::Commit("Y".into())));
         h.run_steps(1);
@@ -1004,6 +1011,40 @@ fn cleared_preedit_target_replacement_rejects_later_terminal_mutations() {
         h.state_mut().run("edit.undo", json!({})).unwrap();
         assert_eq!(h.state().session.active().unwrap().doc.slides[0].shapes[1].text.as_ref().unwrap().paragraphs[0].text(), "WXYZ");
     }
+}
+
+#[test]
+fn closing_the_last_document_clears_a_pending_preedit_terminal() {
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    assert!(h.state().ime_terminal_pending.is_some());
+
+    h.state_mut().run("file.close", json!({})).unwrap();
+    assert!(h.state().session.active().is_none(), "the last presentation closed");
+    // An interruption observed after the document disappeared has no destination at all. It must
+    // stay distinct from "not interrupted yet", which would compare against the retired origin
+    // forever and request avoidable resets after a new document returns.
+    let ctx = h.ctx.clone();
+    h.state_mut().note_settled_composition(&ctx);
+    let pending = h.state().ime_terminal_pending.as_ref().expect("the cleared-preedit terminal is still guarded");
+    assert!(pending.cancelled && pending.interrupted);
+    assert!(pending.interrupted_at.is_none(), "the interruption has no active document destination");
+
+    h.run_steps(1);
+    assert!(h.state().ime_terminal_pending.is_none(), "document teardown releases the terminal guard");
+    assert!(h.state().ime_composition.is_none());
+    assert!(h.state().ime_cancelled.is_none());
+    assert!(!h.state().ime_interrupt_pending);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+
+    // Its dead-document terminal must not force a reset in a new presentation's editor.
+    h.state_mut().run("file.new", json!({})).unwrap();
+    h.run_steps(1);
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+    h.run_steps(1);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear), "the new document's first target needs no stale-composition fence");
+    assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
 }
 
 #[test]
@@ -1037,4 +1078,850 @@ fn cleared_preedit_accepts_its_commit_then_direct_and_fresh_compositions() {
     h.event(Event::Ime(ImeEvent::Commit("Z".into())));
     h.run_steps(1);
     assert_eq!(title_text(h.state()), "abcdXYZ");
+}
+
+// ---------------------------------------------------------------------------
+// Token-bound IME reset adoption (revision02): opaque id + ordered completion.
+// ---------------------------------------------------------------------------
+
+fn reset_completed(id: egui::ImeResetId) -> Event {
+    Event::ImeResetCompleted { request_id: id }
+}
+
+fn published_reset(h: &egui_kittest::Harness<'static, SlideApp>) -> egui::ImeResetId {
+    h.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request).expect("the custom descriptor carries a token-bound reset request")
+}
+
+fn root_phase(h: &egui_kittest::Harness<'static, SlideApp>) -> crate::ImeResetPhase {
+    h.state().ime_reset_for(egui::ViewportId::ROOT)
+}
+
+/// Match the backend contract: the active viewport must have an entry in RawInput.
+fn viewport_input(viewport: egui::ViewportId) -> egui::RawInput {
+    let mut input = egui::RawInput { viewport_id: viewport, ..Default::default() };
+    input.viewports.insert(viewport, egui::ViewportInfo { parent: Some(egui::ViewportId::ROOT), ..Default::default() });
+    input
+}
+
+fn phase_at(h: &egui_kittest::Harness<'static, SlideApp>, viewport: egui::ViewportId) -> crate::ImeResetPhase {
+    h.state().ime_reset_for(viewport)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ImeStateSnapshot {
+    composition: Option<(egui::Id, u64, bool)>,
+    terminal: Option<(egui::Id, u64, (usize, usize), (usize, usize), bool, bool, Option<crate::ImeTerminalStamp>)>,
+    cancelled: Option<(egui::Id, u64)>,
+    generation: u64,
+    settles_seen: u64,
+    interrupt_pending: bool,
+    viewport: Option<egui::ViewportId>,
+    frame_viewport: Option<egui::ViewportId>,
+    reset_entries: usize,
+}
+
+/// Every piece of the root composition lifetime that the per-viewport reset map does not own.
+fn ime_state(h: &egui_kittest::Harness<'static, SlideApp>) -> ImeStateSnapshot {
+    let app = h.state();
+    ImeStateSnapshot {
+        composition: app.ime_composition.map(|c| (c.owner, c.generation, c.settled)),
+        terminal: app.ime_terminal_pending.as_ref().map(|p| (p.owner, p.revision, p.anchor, p.caret, p.cancelled, p.interrupted, p.interrupted_at)),
+        cancelled: app.ime_cancelled.map(|c| (c.owner, c.generation)),
+        generation: app.ime_generation,
+        settles_seen: app.ime_settles_seen,
+        interrupt_pending: app.ime_interrupt_pending,
+        viewport: app.ime_viewport,
+        frame_viewport: app.ime_frame_viewport,
+        reset_entries: app.ime_reset.len(),
+    }
+}
+
+/// Put the title editor into a settled composition and return the actual opaque request id.
+fn settled_title_reset(h: &mut egui_kittest::Harness<'static, SlideApp>) -> egui::ImeResetId {
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    if h.state().session.active().unwrap().selection.text.is_none() {
+        h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+        h.run_steps(2);
+    }
+    h.event(preedit("日"));
+    h.run_steps(1);
+    h.key_down(egui::Key::End);
+    h.run_steps(1);
+    let id = published_reset(h);
+    h.key_up(egui::Key::End);
+    h.run_steps(1);
+    id
+}
+
+#[test]
+fn ordered_reset_completion_is_exact_and_fresh_suffix_survives_stale_prefix() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    // Foreign completion and a fresh preedit in the same raw batch: inert, blocked.
+    let foreign = egui::Context::default().request_ime_reset(egui::ViewportId::ROOT).unwrap();
+    h.input_mut().events.extend([reset_completed(foreign), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "foreign completion cannot release the guard");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    // A stale old commit is rejected while the fence is still Awaiting.
+    h.input_mut().events.push(Event::Ime(ImeEvent::Commit("old".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "the stale prefix is rejected");
+
+    // The exact completion in one batch, then a fresh suffix in the NEXT batch.
+    h.input_mut().events.push(reset_completed(r1));
+    h.run_steps(1);
+    h.input_mut().events.push(preedit("Y"));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y", "the exact completion admits the next-batch suffix");
+    h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+
+    // A second interruption gets a newer id; completion plus the suffix may share one batch.
+    h.event(preedit("Z"));
+    h.run_steps(1);
+    h.key_down(egui::Key::End);
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    h.key_up(egui::Key::End);
+    h.run_steps(1);
+    assert_ne!(r1, r2, "another interruption supersedes the previous fence");
+    h.input_mut().events.extend([reset_completed(r2), preedit("W")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日YZW", "the exact new completion admits the same-batch suffix");
+}
+
+#[test]
+fn no_completion_fails_closed_and_unchanged_waiting_frames_do_not_emit_new_requests() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    for _ in 0..3 {
+        h.input_mut().events.extend([Event::Ime(ImeEvent::Commit("X".into())), preedit("Y")]);
+        h.run_steps(1);
+        assert_eq!(title_text(h.state()), "日", "without a completion no IME mutation is admitted");
+        assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
+    }
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    h.input_mut().events.extend([reset_completed(r1), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y", "the exact completion is the only release");
+}
+
+#[test]
+fn discarded_final_none_suspends_and_the_same_editor_rearms_with_a_new_id() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    h.state_mut().dialog = Some(crate::dialogs::Dialog::new("about"));
+    h.ctx.request_discard("final IME descriptor is absent on this discarded pass");
+    h.run_steps(1);
+    assert!(
+        matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }),
+        "the discarded final-none pass retires R1 locally: {:?}",
+        root_phase(&h)
+    );
+    assert!(h.output().platform_output.ime.is_none());
+
+    h.state_mut().dialog = None;
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2, "returning to the same caret publishes one replacement");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r2));
+
+    // A late completion for the retired request is inert.
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "the retired R1 cannot release R2");
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+}
+
+#[test]
+fn actual_modal_without_discard_suspends_and_queues_no_token() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+
+    // A normal About pass, no request_discard: the modal is an explicitly ineligible route even
+    // though the canvas is painted behind it.
+    h.state_mut().dialog = Some(crate::dialogs::Dialog::new("about"));
+    h.run_steps(2);
+    assert!(
+        matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }),
+        "the modal retires R1 without allocating: {:?}",
+        root_phase(&h)
+    );
+    assert!(h.output().platform_output.ime.is_none(), "the modal publishes no custom descriptor");
+
+    // Force a stock descriptor while the modal stays open. A token queued on the modal pass would
+    // be attached to this descriptor by egui; there must be none.
+    let notes = egui::Id::unique("notes_edit");
+    h.ctx.memory_mut(|m| m.request_focus(notes));
+    h.run_steps(1);
+    let stock = h.output().platform_output.ime.as_ref().expect("the notes field publishes its own descriptor");
+    assert!(stock.reset_request.is_none(), "the modal pass did not queue a custom token for stock output");
+    h.ctx.memory_mut(|m| m.surrender_focus(notes));
+
+    // Returning to the custom editor publishes exactly one replacement, and only its exact
+    // completion admits the suffix.
+    h.state_mut().dialog = None;
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2);
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "the retired modal-pass R1 stays inert");
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+}
+
+#[test]
+fn modal_observe_and_finalizer_reject_a_matching_custom_descriptor_before_allocation() {
+    let mut h = harness(Session::with_new());
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+    h.run_steps(1);
+    h.state_mut().dialog = Some(crate::dialogs::Dialog::new("about"));
+    h.state_mut().set_ime_reset(
+        egui::ViewportId::ROOT,
+        crate::ImeResetPhase::Suspended { viewport: egui::ViewportId::ROOT, needs_rearm: true, request: None },
+    );
+
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(1.0, 18.0));
+    h.state_mut().ime_pending = Some(rect);
+    let ctx = h.ctx.clone();
+    ctx.output_mut(|o| o.ime = None);
+    assert!(h.state_mut().observe_ime(&ctx).is_none(), "a pending canvas rect is hidden by the modal");
+    assert!(ctx.output(|o| o.ime.is_none()), "the hidden custom owner is not republished");
+
+    let owner = h.state().ime_target().expect("the title is still a custom target").owner;
+    let key = crate::ImeDescriptorKey::new(owner, 1, egui::IMEPurpose::Normal);
+    ctx.output_mut(|o| {
+        o.ime = Some(egui::output::IMEOutput {
+            owner,
+            context_generation: 1,
+            purpose: egui::IMEPurpose::Normal,
+            rect,
+            cursor_rect: rect,
+            should_interrupt_composition: false,
+            reset_request: None,
+            change_cause: egui::output::ImeChangeCause::Other,
+            surrounding_text: egui::output::IMESurroundingText::Unavailable,
+        });
+    });
+    h.state_mut().finalize_ime_reset(&ctx, Some(key));
+    assert!(
+        matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }),
+        "the finalizer rejects a matching custom descriptor while the modal owns the route: {:?}",
+        root_phase(&h)
+    );
+    assert!(ctx.output(|o| o.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none())), "no token was added to the modal output");
+}
+
+#[test]
+fn opening_backstage_palette_and_modal_routes_are_explicitly_ineligible() {
+    let mut h = harness(Session::with_new());
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+    h.run_steps(1);
+    assert!(h.state().ime_custom_canvas_route(&h.ctx), "the plain canvas editor is eligible");
+
+    h.state_mut().opening = Some(crate::opening::Opening::for_test("deck.pptx"));
+    assert!(!h.state().ime_custom_canvas_route(&h.ctx), "the opening overlay hides the canvas");
+    h.state_mut().opening = None;
+
+    h.state_mut().open_backstage(crate::backstage::Page::Home);
+    assert!(!h.state().ime_custom_canvas_route(&h.ctx), "Backstage hides the canvas");
+    h.state_mut().close_backstage();
+
+    h.state_mut().palette = Some((String::new(), 0));
+    assert!(!h.state().ime_custom_canvas_route(&h.ctx), "the palette owns input");
+    h.state_mut().palette = None;
+
+    h.state_mut().dialog = Some(crate::dialogs::Dialog::new("about"));
+    assert!(!h.state().ime_custom_canvas_route(&h.ctx), "a modal owns input");
+}
+
+#[test]
+fn stock_focus_backstage_and_no_editor_routes_preserve_stock_output_and_rearm() {
+    // A focused stock TextEdit keeps its own descriptor; the custom fence is suspended.
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    let custom_owner = h.state().ime_target().unwrap().owner;
+    let notes = egui::Id::unique("notes_edit");
+    h.ctx.memory_mut(|m| m.request_focus(notes));
+    h.run_steps(2);
+    let stock = h.output().platform_output.ime.as_ref().expect("the notes field publishes its own IME descriptor");
+    assert_ne!(stock.owner, custom_owner, "the stock field's descriptor was not overwritten");
+    assert!(stock.reset_request.is_none(), "the finalizer did not attach a custom token to stock output");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { .. }));
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "late R1 is inert after stock focus");
+
+    h.ctx.memory_mut(|m| m.surrender_focus(notes));
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2);
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y", "returning to the custom editor re-arms once");
+    h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+    h.run_steps(1);
+
+    // Backstage hides the canvas and must not edit the hidden slide.
+    let r3 = settled_title_reset(&mut h);
+    h.state_mut().open_backstage(crate::backstage::Page::Home);
+    h.run_steps(1);
+    assert!(h.output().platform_output.ime.is_none(), "Backstage publishes no canvas descriptor");
+    assert_eq!(title_text(h.state()), "日Y日", "hidden slide is untouched");
+    h.input_mut().events.extend([reset_completed(r3), preedit("Z")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y日", "Backstage leaves the old fence suspended");
+    h.state_mut().close_backstage();
+    h.run_steps(1);
+    let r4 = published_reset(&h);
+    assert_ne!(r3, r4);
+    h.input_mut().events.extend([reset_completed(r4), preedit("Z")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y日Z", "returning from Backstage re-arms the same editor");
+    h.event(Event::Ime(ImeEvent::Commit("Z".into())));
+    h.run_steps(1);
+
+    // A no-editor/multi-selection route also suspends and returns with one fresh request.
+    let r5 = settled_title_reset(&mut h);
+    h.state_mut().run("text.exit", json!({})).unwrap();
+    h.state_mut().session.active_mut().unwrap().selection.shapes.clear();
+    h.run_steps(1);
+    assert!(h.output().platform_output.ime.is_none(), "no editor means no custom descriptor");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { .. }));
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    h.state_mut().run("text.edit", json!({"id": title, "at": [0, 5]})).unwrap();
+    h.run_steps(1);
+    let r6 = published_reset(&h);
+    assert_ne!(r5, r6);
+    h.input_mut().events.extend([reset_completed(r6), preedit("K")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y日Z日K");
+}
+
+#[test]
+fn full_logic_ui_passes_do_not_rearm_while_standalone_logic_suspends_once() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+
+    // The full pass runs App::logic before the UI. The mode hook must prevent the logic half
+    // from treating the not-yet-painted UI as absence.
+    h.run_steps(2);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+    assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
+
+    let ctx = h.ctx.clone();
+    // A child viewport frame supplies the actual viewport stack for its logic callback.
+    let other = egui::ViewportId::from_hash_of("deckcraft test other viewport");
+    ctx.run_ui(viewport_input(other), |ui| h.state_mut().logic(ui.ctx())).drop_without_applying_deltas();
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    // Standalone root logic paints no geometry: suspend exactly once, without replaying input.
+    let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| h.state_mut().logic(ctx));
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+    let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| h.state_mut().logic(ctx));
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+
+    // The next full UI pass reacts to the actual custom descriptor and publishes one replacement.
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r2));
+    h.run_steps(1);
+    assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
+}
+
+#[test]
+fn standalone_logic_changed_terminal_never_queues_a_token_for_the_next_stock_route() {
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    let before = title_text(h.state());
+    h.state_mut().run("text.select", json!({"anchor": [0, 1], "caret": [0, 1]})).unwrap();
+
+    // A changed pending terminal reaches the interruption branch in a standalone run_logic tick.
+    // Logic paints no geometry, so it must suspend locally instead of putting a request into
+    // egui Memory; otherwise the next stock descriptor consumes the abandoned token.
+    let ctx = h.ctx.clone();
+    let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| h.state_mut().logic(ctx));
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }), "standalone logic allocates no token");
+    assert!(h.state().ime_terminal_pending.as_ref().is_some_and(|p| p.cancelled), "the interruption is still recorded locally");
+    assert!(h.state().ime_interrupt_pending, "the settled composition still needs its platform interrupt");
+
+    h.state_mut().palette = Some((String::new(), 0));
+    h.run_steps(1);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+    assert!(h.output().platform_output.ime.as_ref().is_none_or(|ime| ime.reset_request.is_none()));
+    // TextEdit requests focus after painting; its stock descriptor is on the next frame.
+    h.run_steps(1);
+    let stock = h.output().platform_output.ime.as_ref().expect("the palette field publishes its own descriptor");
+    assert!(stock.reset_request.is_none(), "the abandoned logic tick did not attach a token to stock output");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+    h.input_mut().events.push(preedit("X"));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), before, "stock input cannot edit the hidden slide");
+
+    // Returning to the custom editor publishes exactly one replacement for the real new caret.
+    h.state_mut().palette = None;
+    if let Some(id) = h.ctx.memory(|m| m.focused()) {
+        h.ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    h.run_steps(1);
+    let r = published_reset(&h);
+    h.input_mut().events.extend([reset_completed(r), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "aYbcd", "the exact replacement admits the fresh suffix at the real caret");
+}
+
+#[test]
+fn cleared_preedit_exact_completion_admits_fresh_suffix_without_the_old_terminal_commit() {
+    // Same batch: the exact completion is the platform-reset boundary; no old Commit,
+    // Enabled/Disabled or idle pass is needed before a new composition may start. The caret is
+    // the real one the fixture selected, so the oracle is `aYbcd` (not the review's illustrative
+    // `abcdY`, which assumed a different caret).
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    let undo = undo_len(h.state());
+    h.state_mut().run("text.select", json!({"anchor": [0, 1], "caret": [0, 1]})).unwrap();
+    h.run_steps(1);
+    let r1 = published_reset(&h);
+    let pending = h.state().ime_terminal_pending.as_ref().expect("the retired cleared-preedit terminal is guarded");
+    assert!(pending.cancelled);
+    assert!(pending.interrupted_at.is_some(), "the interruption destination is stored separately from the origin");
+
+    h.input_mut().events.extend([reset_completed(r1), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "aYbcd", "the exact completion admits the same-batch suffix");
+    let t = h.state().session.active().unwrap().selection.text.as_ref().unwrap();
+    assert_eq!((t.anchor, t.caret), ((0, 2), (0, 2)), "the fresh preedit advances the real caret");
+    assert_eq!(undo_len(h.state()), undo, "a preedit creates no undo step");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+    assert!(h.state().ime_terminal_pending.is_none(), "the exact fence completion released the old terminal guard");
+    for _ in 0..3 {
+        h.run_steps(1);
+        assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
+        assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear), "unchanged idle passes do not request R churn");
+    }
+    h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "aYbcd", "the committed suffix replaces its preedit");
+    assert_eq!(undo_len(h.state()), undo + 1, "the fresh composition is exactly one undo step");
+
+    // Next batch: completion alone releases, then the fresh suffix arrives in a later raw batch.
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    let undo = undo_len(h.state());
+    h.state_mut().run("text.select", json!({"anchor": [0, 1], "caret": [0, 1]})).unwrap();
+    h.run_steps(1);
+    let r1 = published_reset(&h);
+    h.input_mut().events.push(reset_completed(r1));
+    h.run_steps(1);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+    assert!(h.state().ime_terminal_pending.is_none());
+    for _ in 0..3 {
+        h.run_steps(1);
+        assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear), "an idle pass after the exact completion keeps it clear");
+        assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
+    }
+    h.input_mut().events.push(preedit("Y"));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "aYbcd", "the next-batch suffix is admitted");
+    h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "aYbcd");
+    assert_eq!(undo_len(h.state()), undo + 1);
+}
+
+#[test]
+fn duplicate_exact_completion_after_clear_is_inert() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    let undo = undo_len(h.state());
+
+    h.input_mut().events.push(reset_completed(r1));
+    h.run_steps(1);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+
+    // A duplicate after Clear does nothing, and the same batch may carry a fresh preedit.
+    h.input_mut().events.extend([reset_completed(r1), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+    assert_eq!(undo_len(h.state()), undo);
+    h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+
+    // A duplicate old completion never clears the latest replacement either.
+    h.event(preedit("Z"));
+    h.run_steps(1);
+    h.key_down(egui::Key::End);
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    h.key_up(egui::Key::End);
+    h.run_steps(1);
+    assert_ne!(r1, r2);
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日YZ", "the duplicate old completion cannot release R2");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r2));
+    h.input_mut().events.extend([reset_completed(r2), preedit("W")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日YZW");
+}
+
+#[test]
+fn font_install_early_return_suspends_without_a_speculative_token_and_rearms_once() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    let before = title_text(h.state());
+
+    // Force the real ui_setup font-install early return. The outer all-exit wrapper must still
+    // observe the absent custom descriptor and retire R1.
+    h.state_mut().styled = false;
+    // A discarded pass is invisible to `run_ui`: it retries immediately, up to `max_passes`.
+    // Drive exactly one root UI pass here so the discarded pass itself can be observed, while
+    // keeping the normal two-pass budget so `Context::will_discard` is genuinely true
+    // (`num_completed_passes + 1 < max_passes`; with `max_passes == 1` it would be false and the
+    // finalizer would take the accepted-pass branch). This calls only `SlideApp::ui`, not
+    // `run_ui` or its plugin pass hooks, and not `SlideApp::logic`; the font-install early return
+    // under test does not depend on them.
+    let input = h.input_mut().take();
+    let ctx = h.ctx.clone();
+    ctx.begin_pass(input);
+    ctx.root_ui(|ui| h.state_mut().ui(ui));
+    assert!(ctx.will_discard(), "the font-install pass is a discarded pass under the normal budget");
+    let pass = ctx.end_pass();
+    let published = pass.platform_output.ime.clone();
+    pass.drop_without_applying_deltas();
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+    assert!(published.is_none(), "the discarded font pass publishes no custom descriptor");
+
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2, "the late R1 is inert; returning custom paints one replacement");
+    assert_eq!(title_text(h.state()), before, "the late preedit stays blocked");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r2));
+
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), format!("{before}Y"));
+}
+
+#[test]
+fn palette_route_retires_the_guard_without_a_speculative_token_and_rearms_once() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    let before = title_text(h.state());
+
+    h.state_mut().palette = Some((String::new(), 0));
+    h.run_steps(2);
+    let output = h.output().platform_output.ime.as_ref();
+    assert!(output.is_none_or(|output| output.reset_request.is_none()), "the finalizer never attaches a custom token to stock output");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), before, "the palette leaves the hidden slide untouched");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { .. }));
+
+    h.state_mut().palette = None;
+    if let Some(id) = h.ctx.memory(|m| m.focused()) {
+        h.ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2);
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), format!("{before}Y"));
+}
+
+#[test]
+fn render_only_viewports_cannot_mutate_root_composition_or_bind_the_root_guard() {
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    h.state_mut().run("text.select", json!({"anchor": [0, 1], "caret": [0, 1]})).unwrap();
+    h.run_steps(1);
+    let r1 = published_reset(&h);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    // Move the live selection without a root pass. A second window/presenter viewport renders
+    // through its own immediate viewport and never calls `SlideApp::logic`/`ui`; admitting such a
+    // callback would mutate root composition state while only the reset map is per-viewport.
+    h.state_mut().run("text.select", json!({"anchor": [0, 2], "caret": [0, 2]})).unwrap();
+    let before = ime_state(&h);
+    // `run_ui` for a child viewport runs that viewport's whole pass and returns its output; the
+    // harness keeps the last ROOT output. Publish nothing for the render-only viewport and leave
+    // the root's already-published token untouched.
+    let root_ime_before = h.output().platform_output.ime.clone();
+    assert_eq!(
+        root_ime_before.as_ref().and_then(|ime| ime.reset_request),
+        Some(r1),
+        "the root descriptor legitimately still carries the published R1"
+    );
+    let child = egui::ViewportId::from_hash_of("deckcraft test child viewport");
+    let ctx = h.ctx.clone();
+    let child_logic = ctx.run_ui(viewport_input(child), |ui| h.state_mut().logic(ui.ctx()));
+    assert!(child_logic.platform_output.ime.is_none(), "rejected child logic publishes no IME descriptor");
+    child_logic.drop_without_applying_deltas();
+    assert_eq!(ime_state(&h), before, "rejected child logic left every root composition field unchanged");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1), "root R1 survives the child tick");
+    assert!(matches!(phase_at(&h, child), crate::ImeResetPhase::Clear), "no child guard was admitted");
+    assert_eq!(h.output().platform_output.ime, root_ime_before, "the child tick does not clear or rebind the root's published token");
+
+    let child_ui = ctx.run_ui(viewport_input(child), |ui| h.state_mut().ui(ui));
+    assert!(child_ui.platform_output.ime.is_none(), "rejected child UI publishes no IME descriptor");
+    child_ui.drop_without_applying_deltas();
+    assert_eq!(ime_state(&h), before, "rejected child UI left every root composition field unchanged");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+    assert_eq!(h.output().platform_output.ime, root_ime_before, "the child UI does not clear or rebind the root's published token");
+
+    // The root guard, not a child request, is what admits the real next-batch input.
+    h.input_mut().events.extend([reset_completed(r1), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "abYcd", "the moved real caret receives the fresh suffix");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+}
+
+#[test]
+fn a_suspended_guard_or_request_stamped_for_another_viewport_is_never_rebound() {
+    let mut h = harness(Session::with_new());
+    let _ = settled_title_reset(&mut h);
+    let child = egui::ViewportId::from_hash_of("deckcraft foreign suspended viewport");
+    let child_request = h.ctx.request_ime_reset(child).expect("a real child request token");
+    h.state_mut()
+        .ime_reset
+        .insert(egui::ViewportId::ROOT, crate::ImeResetPhase::Suspended { viewport: child, needs_rearm: true, request: Some(child_request) });
+    h.run_steps(1);
+    let root_request = published_reset(&h);
+    assert_ne!(root_request, child_request, "a request issued for the child viewport is not rebound to root");
+    assert_eq!(root_request.viewport_id(), egui::ViewportId::ROOT);
+    assert!(
+        matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, viewport, .. } if id == root_request && viewport == egui::ViewportId::ROOT)
+    );
+
+    // A child completion delivered on the root stream is foreign and inert.
+    h.input_mut().events.extend([reset_completed(child_request), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "the foreign request completion cannot clear the root fence");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == root_request));
+    h.input_mut().events.extend([reset_completed(root_request), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+}
+
+#[test]
+fn sorter_and_notes_page_settles_never_allocate_for_a_stock_route() {
+    for (view, command) in [(crate::ViewMode::Sorter, "view.sorter"), (crate::ViewMode::NotesPage, "view.notesPage")] {
+        let mut h = harness(Session::with_new());
+        let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+        h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+        h.run_steps(2);
+        assert!(h.state().ime_custom_canvas_route(&h.ctx), "the plain canvas editor is eligible");
+        h.event(preedit("日"));
+        h.run_steps(1);
+        let before = title_text(h.state());
+
+        // Switch to a production view that paints no canvas producer. The retained text
+        // selection still yields an IME owner, so a negative-only admission check would let the
+        // settle below allocate a token for a route that never publishes a custom descriptor.
+        h.state_mut().run(command, json!({})).unwrap();
+        assert_eq!(h.state().ui.view, view);
+        assert!(h.state().ime_target().is_some(), "the retained text selection still yields an owner");
+        assert!(!h.state().ime_custom_canvas_route(&h.ctx), "{command} does not call canvas::show");
+
+        h.key_down(egui::Key::End);
+        h.run_steps(1);
+        assert!(
+            matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }),
+            "the settle retires the old guard before the finalizer; no request is allocated in input: {:?}",
+            root_phase(&h)
+        );
+        h.key_up(egui::Key::End);
+        h.run_steps(1);
+        assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+
+        // The palette's focused TextEdit is a stock descriptor. A token allocated on the sorter
+        // settle would be attached here by egui.
+        h.state_mut().palette = Some((String::new(), 0));
+        h.run_steps(1);
+        assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+        assert!(h.output().platform_output.ime.as_ref().is_none_or(|ime| ime.reset_request.is_none()));
+        // TextEdit requests focus after painting; its stock descriptor is on the next frame.
+        h.run_steps(1);
+        let stock = h.output().platform_output.ime.as_ref().expect("the palette TextEdit publishes its own descriptor");
+        assert!(stock.reset_request.is_none(), "{command} did not attach a speculative token to stock output");
+        h.input_mut().events.push(preedit("X"));
+        h.run_steps(1);
+        assert_eq!(title_text(h.state()), before, "stock input cannot edit the hidden canvas");
+
+        // Returning to the custom canvas publishes exactly one replacement, and only its exact
+        // completion admits the fresh suffix.
+        h.state_mut().palette = None;
+        if let Some(id) = h.ctx.memory(|m| m.focused()) {
+            h.ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        h.state_mut().run("view.normal", json!({})).unwrap();
+        h.run_steps(1);
+        let reset = published_reset(&h);
+        h.input_mut().events.extend([reset_completed(reset), preedit("Y")]);
+        h.run_steps(1);
+        assert_eq!(title_text(h.state()), format!("{before}Y"), "returning to the canvas re-arms once");
+        h.event(Event::Ime(ImeEvent::Commit("Y".into())));
+        h.run_steps(1);
+        assert_eq!(title_text(h.state()), format!("{before}Y"));
+    }
+}
+
+#[test]
+fn same_pass_custom_to_stock_palette_retires_the_guard_without_a_new_token() {
+    let mut h = harness(Session::with_new());
+    let r1 = settled_title_reset(&mut h);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == r1));
+
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(1.0, 18.0));
+    let ctx = h.ctx.clone();
+    let mut custom = None;
+    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let ctx = ui.ctx();
+        h.state_mut().ime_frame_viewport = Some(egui::ViewportId::ROOT);
+        // A pre-UI interruption in a full pass must retire the guard locally, not allocate.
+        // The old implementation allocated here because the canvas route looked available.
+        h.state_mut().note_ime_interruption(ctx, true);
+        assert!(matches!(h.state().ime_reset_for(egui::ViewportId::ROOT), crate::ImeResetPhase::Suspended { request: None, .. }));
+
+        h.state_mut().ime_pending = Some(rect);
+        // The canvas producer ran first and published a matching custom descriptor this pass.
+        custom = h.state_mut().observe_ime(ctx);
+        assert!(custom.is_some(), "the canvas's descriptor is eligible");
+
+        // Later in the same pass the command palette opens and its TextEdit owns IME output.
+        // Replace the pass output with that stock descriptor before the finalizer runs.
+        h.state_mut().palette = Some((String::new(), 0));
+        let stock_owner = egui::Id::unique("same-pass-stock-palette");
+        ctx.output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput {
+                owner: stock_owner,
+                context_generation: 1,
+                purpose: egui::IMEPurpose::Normal,
+                rect,
+                cursor_rect: rect,
+                should_interrupt_composition: false,
+                reset_request: None,
+                change_cause: egui::output::ImeChangeCause::Other,
+                surrounding_text: egui::output::IMESurroundingText::Unavailable,
+            });
+        });
+        h.state_mut().finalize_ime_reset(ctx, custom);
+    });
+    // Read after `end_pass`: this is where egui would attach a request left in Memory to the
+    // pass's stock descriptor. It must be absent.
+    let stock_reset = output.platform_output.ime.as_ref().and_then(|ime| ime.reset_request);
+    output.drop_without_applying_deltas();
+    assert!(stock_reset.is_none(), "the pre-UI interruption did not leave a token for the stock descriptor");
+    assert!(
+        matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }),
+        "the custom->stock pass retires R1 without allocating: {:?}",
+        root_phase(&h)
+    );
+
+    // A full palette pass must not publish R1 or any replacement into the stock field.
+    h.run_steps(1);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Suspended { request: None, .. }));
+    assert!(h.output().platform_output.ime.as_ref().is_none_or(|ime| ime.reset_request.is_none()));
+    // TextEdit requests focus after painting; its stock descriptor is on the next frame.
+    h.run_steps(1);
+    let stock = h.output().platform_output.ime.as_ref().expect("the palette TextEdit publishes its own descriptor");
+    assert!(stock.reset_request.is_none());
+    assert!(!h.state().ime_custom_canvas_route(&h.ctx));
+
+    h.state_mut().palette = None;
+    if let Some(id) = h.ctx.memory(|m| m.focused()) {
+        h.ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    h.run_steps(1);
+    let r2 = published_reset(&h);
+    assert_ne!(r1, r2, "returning to the canvas requests one replacement");
+    h.input_mut().events.extend([reset_completed(r1), preedit("X")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日", "the retired custom R1 stays inert");
+    h.input_mut().events.extend([reset_completed(r2), preedit("Y")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), "日Y");
+}
+
+#[test]
+fn close_new_then_edit_before_a_pass_keeps_the_old_terminal_fence_until_exact_reset() {
+    let (mut h, _) = pending_terminal_editor();
+    clear_pending_preedit(&mut h);
+    let old_owner = h.state().ime_target().unwrap().owner;
+    let old_uid = h.state().session.active().unwrap().uid;
+    let pending = h.state().ime_terminal_pending.as_ref().expect("the cleared-preedit terminal is guarded");
+    assert_eq!(pending.owner, old_owner);
+    assert!(!pending.cancelled);
+
+    // Replace the active document and enter its first editor without an intervening pass
+    // observing `None`. Blindly clearing on the uid change would let the old platform suffix
+    // land in the new document, so the old terminal must stay bound to its old owner.
+    h.state_mut().run("file.close", json!({})).unwrap();
+    h.state_mut().run("file.new", json!({})).unwrap();
+    let new_uid = h.state().session.active().unwrap().uid;
+    assert_ne!(old_uid, new_uid);
+    let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+    h.state_mut().run("text.edit", json!({"id": title})).unwrap();
+    h.run_steps(1);
+
+    let pending = h.state().ime_terminal_pending.as_ref().expect("the old terminal survives the document replacement");
+    assert_eq!(pending.owner, old_owner, "the terminal is still bound to the retired composition's owner");
+    assert!(pending.cancelled && pending.interrupted);
+    let reset = published_reset(&h);
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == reset));
+    let before = title_text(h.state());
+    let undo = undo_len(h.state());
+
+    // The old composition's suffix arrives before its terminal commit: no preedit may enter the
+    // new document's editor, and the old terminal guard must still be live.
+    h.input_mut().events.push(preedit("F"));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), before, "a stale old preedit is rejected");
+    assert_eq!(undo_len(h.state()), undo);
+    assert!(h.state().ime_terminal_pending.as_ref().is_some_and(|p| p.owner == old_owner && p.cancelled));
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == reset));
+
+    // The old terminal commit is rejected and consumed as a terminal event. The new document's
+    // reset fence remains Awaiting: terminal delivery is not the platform-reset boundary.
+    h.input_mut().events.push(Event::Ime(ImeEvent::Commit("F".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), before, "the old terminal commit is rejected");
+    assert_eq!(undo_len(h.state()), undo);
+    assert!(h.state().ime_terminal_pending.is_none(), "the delivered old terminal no longer needs a guard");
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Awaiting { id, .. } if id == reset));
+
+    // Another stale suffix still cannot cross the new document's reset fence.
+    h.input_mut().events.push(preedit("F"));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), before, "the reset fence, not just the terminal, blocks the old suffix");
+
+    // Only the exact completion of the new document's fence releases custom input. The latest
+    // new composition then gets its own preedit and commit.
+    h.input_mut().events.extend([reset_completed(reset), preedit("F")]);
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), format!("{before}F"), "the fresh new-document composition is admitted");
+    assert!(h.state().ime_terminal_pending.is_none());
+    assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
+    h.event(Event::Ime(ImeEvent::Commit("F".into())));
+    h.run_steps(1);
+    assert_eq!(title_text(h.state()), format!("{before}F"));
+    assert_eq!(undo_len(h.state()), undo + 1, "only the latest new composition is one undo step");
 }

@@ -474,6 +474,11 @@ impl Show {
         self.timer.elapsed(now)
     }
 
+    /// True while the pointer moved in the last 2.5 s; the media controls and GIF button hide after that.
+    fn pointer_awake(&self, now: f64) -> bool {
+        now - self.last_move < 2.5
+    }
+
     /// Pen and laser are different pointers: turning one on puts the other away.
     fn set_pen(&mut self, on: bool) {
         self.pen = on;
@@ -886,8 +891,13 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
         && show.zoom.is_none()
         && !show.zoom_arm
         && !show.reading_bar_hit(&ctx)
-        && !pointer_on_media_bar(&ctx, ui, &doc, &show);
-    let gif_click = if clicked && on_slide && doc.show.show_media_controls { gif_hit(&ctx, ui, &show, doc_uid, &doc, app) } else { None };
+        && !pointer_on_media_bar(&ctx, ui, &doc, &show, now);
+    // The button is drawn only while the pointer is awake; a hidden button takes no click.
+    let gif_click = if clicked && on_slide && doc.show.show_media_controls && show.pointer_awake(now) {
+        gif_hit(&ctx, ui, &show, doc_uid, &doc, app)
+    } else {
+        None
+    };
     let media_click = if clicked && on_slide && gif_click.is_none() { media_hit(&ctx, ui, &show, &doc) } else { None };
     let under = if on_slide && gif_click.is_none() && media_click.is_none() { shapes_under_pointer(&ctx, ui, &mut show, &doc, now) } else { None };
     let pointing = under.as_ref().is_some_and(|u| u.pick.is_some());
@@ -924,7 +934,7 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
         }
     } else if clicked && show.zoom.is_some() && !show.pen && !show.reading_bar_hit(&ctx) {
         show.dismiss_zoom();
-    } else if clicked && !show.pen && !show.reading_bar_hit(&ctx) && !pointer_on_media_bar(&ctx, ui, &doc, &show) {
+    } else if clicked && !show.pen && !show.reading_bar_hit(&ctx) && !pointer_on_media_bar(&ctx, ui, &doc, &show, now) {
         if show.ended {
             keep = false;
         } else if show.blank.is_some() {
@@ -1201,7 +1211,7 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
             // Not while zoomed: the controls sit where the whole slide would be.
             if doc.show.show_media_controls && !show.zoom_arm && show.zoom.is_none() {
                 let k = srect.width() / sw.max(1.0);
-                if let Some(p) = ctx.input(|i| i.pointer.hover_pos()).filter(|_| !show.pen && !show.laser && now - show.last_move < 2.5) {
+                if let Some(p) = ctx.input(|i| i.pointer.hover_pos()).filter(|_| !show.pen && !show.laser && show.pointer_awake(now)) {
                     for g in &gifs {
                         let r = on_screen(srect, k, &g.rect);
                         if r.contains(p) {
@@ -1210,7 +1220,8 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
                         }
                     }
                 }
-                if let Some((id, clip, bar)) = media_bar_target(&ctx, &doc, &show, srect) {
+                if let Some((id, clip, bar)) = media_bar_target(&ctx, &doc, &show, srect).filter(|_| show.pointer_awake(now)) {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
                     let action = {
                         let status = app.media.status(id);
                         crate::media::control_bar(ui, bar, status.as_ref(), &clip)
@@ -1264,7 +1275,7 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
         ctx.set_cursor_icon(egui::CursorIcon::None);
     } else if show.zoom_arm || show.grid {
         ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-    } else if now - show.last_move > 2.5 && !show.reading {
+    } else if !show.pointer_awake(now) && !show.reading {
         // Idle first: a still pointer hides also over a clickable shape, such as a playing clip.
         ctx.set_cursor_icon(egui::CursorIcon::None);
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -1324,7 +1335,7 @@ pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
             let a = show.state.prev(&doc);
             show.apply(a, &doc, now);
         }
-    } else if !show.grid && (now - show.last_move < 2.5 || show.zoom_arm) {
+    } else if !show.grid && (show.pointer_awake(now) || show.zoom_arm) {
         let bar = tool_bar_rect(full);
         painter.rect_filled(bar, CornerRadius::same(17), Color32::from_black_alpha(140));
         let mut child =
@@ -1512,8 +1523,8 @@ fn media_bar_target(ctx: &egui::Context, doc: &Presentation, show: &Show, srect:
 }
 
 /// True when the pointer is on a visible playback bar, so that click must not advance the show.
-fn pointer_on_media_bar(ctx: &egui::Context, ui: &Ui, doc: &Presentation, show: &Show) -> bool {
-    if !doc.show.show_media_controls || show.pen || show.ended || show.blank.is_some() {
+fn pointer_on_media_bar(ctx: &egui::Context, ui: &Ui, doc: &Presentation, show: &Show, now: f64) -> bool {
+    if !doc.show.show_media_controls || !show.pointer_awake(now) || show.pen || show.ended || show.blank.is_some() {
         return false;
     }
     let Some(p) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos())) else { return false };
@@ -2352,6 +2363,200 @@ mod tests {
         harness.key_press(egui::Key::G);
         harness.run_steps(2);
         assert!(!harness.state().1.presenter_grid, "G again closes it");
+    }
+
+    /// A silent mono 8 kHz WAV, so the clip has a real duration to seek in.
+    fn silent_wav(secs: u32) -> Vec<u8> {
+        let rate = 8_000u32;
+        let data = vec![0u8; (rate * secs * 2) as usize];
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(&data);
+        b
+    }
+
+    /// A running show on a slide with one 10 s clip. Returns the harness, the clip, a point on the
+    /// bar's seek track, and what `pointer_on_media_bar` said on the last frame.
+    fn show_with_clip() -> (egui_kittest::Harness<'static, SlideApp>, ShapeId, Pos2, std::rc::Rc<std::cell::Cell<bool>>) {
+        let size = vec2(1000.0, 700.0);
+        let mut session = deckcraft_engine::Session::with_new();
+        let id = ShapeId(4000);
+        session
+            .edit(|doc, _| {
+                let media = doc.add_media("clip.wav", "audio/wav", silent_wav(10)).unwrap();
+                let (w, h) = (doc.slide_size.width, doc.slide_size.height);
+                let clip = deckcraft_model::MediaClip { media, video: true, volume: 1.0, duration_ms: 10_000, ..Default::default() };
+                let xfrm = deckcraft_geom::Xfrm::new(w * 0.2, h * 0.2, w * 0.6, h * 0.6);
+                let slide = std::sync::Arc::make_mut(&mut doc.slides[0]);
+                slide.shapes.push(deckcraft_model::Shape {
+                    id,
+                    xfrm: Some(xfrm),
+                    kind: deckcraft_model::ShapeKind::Media(clip),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let on_bar = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = on_bar.clone();
+        let slide = std::rc::Rc::new(std::cell::Cell::new(Rect::NOTHING));
+        let slide_seen = slide.clone();
+        // Presenter view opens an embedded window over the whole screen here, which takes the clicks.
+        let mut app = SlideApp::new(session, crate::Services::default());
+        app.ui.presenter_view = false;
+        let mut harness = egui_kittest::Harness::builder().with_size(size).with_step_dt(0.25).build_ui_state(
+            move |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                if let (Some(show), Some(d)) = (app.show.as_ref(), app.session.active()) {
+                    let now = ui.input(|i| i.time);
+                    seen.set(pointer_on_media_bar(ui.ctx(), ui, &d.doc, show, now));
+                    slide_seen.set(shown_slide_rect(ui, show, &d.doc));
+                }
+                app.ui(ui);
+            },
+            app,
+        );
+        harness.run_steps(3);
+        harness.state_mut().start_show(0, false);
+        harness.run_steps(2);
+        let doc = harness.state().session.active().unwrap().doc.clone();
+        let bar = slide_media_bars(slide.get(), &doc, 0)[0].3;
+        let track = pos2(bar.min.x + bar.width() * 0.8, bar.center().y);
+        (harness, id, track, on_bar)
+    }
+
+    /// Press and release the primary button at `p`.
+    fn click_at(harness: &mut egui_kittest::Harness<'static, SlideApp>, p: Pos2) {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            harness.step();
+        }
+    }
+
+    /// #967: hovering a clip shows its bar and a click on the bar seeks. After 3 s without moving
+    /// the bar is gone, and a click where it was acts on the clip itself (play), not on the bar.
+    #[test]
+    fn media_controls_hide_when_pointer_is_idle() {
+        // Awake: the bar is there and a click on its timeline seeks, leaving the clip paused.
+        let (mut harness, id, track, on_bar) = show_with_clip();
+        harness.hover_at(track);
+        harness.run_steps(2);
+        assert!(harness.state().show.as_ref().unwrap().pointer_awake(harness.ctx.input(|i| i.time)));
+        assert!(on_bar.get(), "the bar is under a pointer that just moved");
+        click_at(&mut harness, track);
+        harness.run_steps(2);
+        let status = harness.state().media.status(id).expect("the click on the bar cued the clip");
+        assert!(!harness.state().media.is_playing(id), "a bar click seeks, it does not play");
+        assert!(status.position > 1.0, "seeked along the timeline, at {}", status.position);
+
+        // Idle: same spot, no movement for 3 s.
+        let (mut harness, id, track, on_bar) = show_with_clip();
+        harness.hover_at(track);
+        harness.run_steps(2);
+        assert!(on_bar.get());
+        harness.run_steps(12);
+        assert!(!harness.state().show.as_ref().unwrap().pointer_awake(harness.ctx.input(|i| i.time)));
+        assert!(!on_bar.get(), "the bar is hidden once the pointer is idle");
+        click_at(&mut harness, track);
+        harness.run_steps(2);
+        assert!(harness.state().media.is_playing(id), "the click reached the clip");
+        let at = harness.state().media.status(id).map_or(0.0, |s| s.position);
+        assert!(at < 5.0, "the click did not seek along the timeline, position {at}");
+    }
+
+    /// Two 1×1 frames (black, then white), 100 ms each.
+    fn two_frame_gif() -> Vec<u8> {
+        let mut b = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
+        for pixel in [b"\x44\x01", b"\x4c\x01"] {
+            b.extend_from_slice(b"\x21\xf9\x04\x00\x0a\x00\x00\x00");
+            b.extend_from_slice(b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02");
+            b.extend_from_slice(pixel);
+            b.push(0);
+        }
+        b.push(0x3b);
+        b
+    }
+
+    /// A running show on the first of two slides; slide 1 holds a large animated GIF. Returns the
+    /// harness, the GIF, and its play/pause button's centre.
+    fn show_with_gif() -> (egui_kittest::Harness<'static, SlideApp>, ShapeId, Pos2) {
+        let mut session = deckcraft_engine::Session::with_new();
+        // The GIF is on slide 1, the slide the editor has selected, with a slide after it.
+        session.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+        session.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+        session.execute("slide.go", &json!({"index": 1})).unwrap();
+        let id = ShapeId(4100);
+        session
+            .edit(|doc, _| {
+                let media = doc.add_media("a.gif", "image/gif", two_frame_gif()).unwrap();
+                let (w, h) = (doc.slide_size.width, doc.slide_size.height);
+                let slide = std::sync::Arc::make_mut(&mut doc.slides[1]);
+                slide.shapes.push(deckcraft_model::Shape {
+                    id,
+                    xfrm: Some(deckcraft_geom::Xfrm::new(w * 0.2, h * 0.2, w * 0.6, h * 0.6)),
+                    kind: deckcraft_model::ShapeKind::Picture { fill: deckcraft_model::style::PictureFill { media, ..Default::default() } },
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+        let slide = std::rc::Rc::new(std::cell::Cell::new(Rect::NOTHING));
+        let slide_seen = slide.clone();
+        let mut app = SlideApp::new(session, crate::Services::default());
+        app.ui.presenter_view = false;
+        let mut harness = egui_kittest::Harness::builder().with_size(vec2(1000.0, 700.0)).with_step_dt(0.25).build_ui_state(
+            move |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                if let (Some(show), Some(d)) = (app.show.as_ref(), app.session.active()) {
+                    slide_seen.set(shown_slide_rect(ui, show, &d.doc));
+                }
+                app.ui(ui);
+            },
+            app,
+        );
+        harness.run_steps(3);
+        harness.state_mut().start_show(1, false);
+        harness.run_steps(2);
+        let doc = harness.state().session.active().unwrap().doc.clone();
+        let srect = slide.get();
+        let k = srect.width() / doc.slide_size.width.max(1.0) as f32;
+        let rect = doc.slides[1].shapes.last().unwrap().xfrm.unwrap();
+        let button = crate::media::gif_button_rect(on_screen(srect, k, &rect)).center();
+        (harness, id, button)
+    }
+
+    /// The GIF's play/pause button is drawn only while the pointer is awake, so a click on its
+    /// spot after 2.5 s without movement advances the show instead of pausing the GIF.
+    #[test]
+    fn gif_button_click_needs_an_awake_pointer() {
+        let (mut harness, id, button) = show_with_gif();
+        harness.hover_at(button);
+        harness.run_steps(2);
+        click_at(&mut harness, button);
+        harness.run_steps(2);
+        assert!(harness.state().session.gif_paused.contains(&id), "an awake pointer's click pauses the GIF");
+        assert_eq!(harness.state().show.as_ref().unwrap().state.slide, 1);
+
+        let (mut harness, id, button) = show_with_gif();
+        harness.hover_at(button);
+        harness.run_steps(2);
+        harness.run_steps(12);
+        assert!(!harness.state().show.as_ref().unwrap().pointer_awake(harness.ctx.input(|i| i.time)));
+        click_at(&mut harness, button);
+        harness.run_steps(2);
+        assert!(!harness.state().session.gif_paused.contains(&id), "the hidden button is not clickable");
+        assert_eq!(harness.state().show.as_ref().unwrap().state.slide, 2, "the click advanced the show");
     }
 
     /// Send real egui key events to the presenter UI, without the audience window's handler.

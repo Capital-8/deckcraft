@@ -235,7 +235,8 @@ and starts at that effect. The pane has an advanced timeline with draggable bars
 ### Edit points, text warp, 3-D
 - **Evidence:** checklist rows "Edit points" (P1 partial: Edit Points converts a shape to a
   freeform, vertices drag, Ctrl/Cmd-click adds or deletes, smooth/straight/corner points and Bézier
-  handles; no Straight/Curved Segment or Open/Close Path), "Text warp transforms" (partial: all 40
+  handles, Straight/Curved Segment on a segment and Open/Close Path on a point; the menu has no
+  Delete Segment or Add Point), "Text warp transforms" (partial: all 40
   `prstTxWarp` presets render, their adjusts round-trip, Shape Format ▸ Text Effects ▸ Transform
   applies one with `format.textWarp`, and a selected warp shows a yellow handle per adjust that
   dragging sets; arc/circle placement can differ from PowerPoint by 1–3 % of the path length),
@@ -245,8 +246,8 @@ and starts at that effect. The pane has an advanced timeline with draggable bars
   shade bevels and sides approximately (fitted to PowerPoint for three-point/matte only); contours
   draw as a band round the face outline (not round the extruded silhouette); Format Shape ▸
   Effects has 3-D Format and 3-D Rotation).
-- **Estimate:** 1 h (edit points: segment types, open/close path), 1–2 h (fitting the other rigs
-  and materials to PowerPoint renders).
+- **Estimate:** 1 h (edit points: Delete Segment and Add Point in the menu), 1–2 h (fitting the
+  other rigs and materials to PowerPoint renders).
 
 ### Proofing: spelling, thesaurus, AutoCorrect
 - **Evidence:** `review.spelling` checks with Hunspell-format dictionaries the system already has
@@ -276,7 +277,7 @@ Zoom: live thumbnails, the zoom-in animation and the native `p166:sldZm` element
 artistic effects (3–6 h for the other 15 of 22; 7 approximated and round-tripped), remove
 background (6–10 h; needs a model or a classical matte), insert screenshot (2–3 h), record
 audio/screen and record slide show (8–12 h), compare presentations beyond slide-level accept
-(reject, per-object accept, markers on the slide: 3–5 h), password protection (4–6 h, ECMA-376
+and reject (per-object accept and reject, markers on the slide: 2–4 h), password protection (4–6 h, ECMA-376
 agile encryption), ink to text and math beyond Ink to Shape (6–10 h), 3-D models and stock content
 (6–10 h; Insert › Icons places a Lucide stroke set).
 
@@ -364,6 +365,8 @@ Detail in [localization-parity.md](localization-parity.md).
 | 2026-10-15 | trivial | Native saves retain chart package parts and relationships, including charts in groups; edited chart data still does not export a stale source workbook. Chart editing gaps and scores remain unchanged |
 | 2026-10-15 | trivial | PPTX trigger sequences keep later On Click steps instead of converting them to After Previous; mixed starts, independent buttons and paragraph builds have synthetic round-trip regressions |
 | 2026-10-16 | trivial | AutoFormat superscripts ordinals (1st, 22nd) as you type, with an AutoCorrect option to turn it off; automatic bulleted lists remain |
+| 2026-10-15 | minor | Edit Points: Straight/Curved Segment on a right-clicked segment and Open/Close Path on a point (`shape.segmentType`, `shape.openPath`, `shape.closePath`); left: Delete Segment and Add Point in the menu |
+| 2026-10-15 | trivial | Compare: slide-level Reject and Reject All landed; the entry keeps per-object accept and reject and the slide markers |
 | 2026-10-14 | trivial | Fixed #718: remote MCP no longer accepts unrelated or buffered stale success; loopback regressions cover invalid envelopes, incomplete and oversized frames |
 | 2026-10-14 | minor | Community PR wave folded: one entry each for the soak tests (engine and UI), the PPTX corpus (seven owned corpus files), edit points / text warp / 3-D, proofing (Hunspell spelling, thesaurus, AutoCorrect), the smaller missing rows, dialogs (41 vs ~60; Print and Insert Object left) and pen/trackpad input; ranked rows 3, 4 and 10 de-duplicated (comment threads #70 and the pane timeline are done); the fixed command-palette entry (#79) removed |
 | 2026-10-13 | minor | EMF/WMF rectangle clip regions (`INTERSECTCLIPRECT`, `EXCLUDECLIPRECT`, `EXTSELECTCLIPRGN`) limit later drawing. EMF+ records remain |

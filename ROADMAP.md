@@ -134,6 +134,7 @@ app's JSON control channel (`deckcraft --control PORT`).
 
 | Date | What landed |
 |---|---|
+| 2026-10-23 | Chart text colour: `chart.options {textColor}` and Font Color on a selected chart colour its title, axes, legend and data labels; the colour is written to the chart part (`c:txPr` on the axes, legend, labels and chart, the title's run defaults) so an imported chart keeps its `txPr` colours through an edit and a save; text without a colour of its own takes PowerPoint's default, the theme's text colour at 65 % plus 35 % (595959 on a light theme, light grey on a dark one) |
 | 2026-10-23 | Format Background ▸ Apply to All also sets the background of the slide masters the slides use (and clears their layouts' overrides), so new slides keep it (#891) |
 | 2026-10-22 | Table text takes the master's other-text style (`otherStyle`), shapes and text boxes the presentation's default text style, as PowerPoint for Mac draws them (synthetic probe: 14 pt cells under a 14 pt `otherStyle` and a 26 pt `defaultTextStyle`); a private deck's table had been drawn 20 pt instead of 18 |
 | 2026-10-18 | Find (Ctrl+F): "Find what:" has the keyboard as soon as the dialog opens, and keeps it after Enter finds a match, so the search can be typed and changed without clicking the field (#951) |
@@ -145,7 +146,10 @@ app's JSON control channel (`deckcraft --control PORT`).
 | 2026-10-23 | Normal view: a slide zoomed past the window gets a horizontal and a vertical scroll bar on the axes that overflow; drag the thumb or click the track to reach every edge (#1157) |
 | 2026-10-22 | Shape Fill and Shape Outline format the members of a selected group, including nested groups, in one undo step. Fill transparency retains each member's effective colour (#1079) |
 | 2026-10-21 | 3-D contours, extrusion depths and bevels keep their size in points inside a group whose child coordinates scale its shapes: a 1 pt contour on a small extruded cube in a legacy group drew hundreds of points wide, a band across the slide |
+| 2026-10-21 | Groups nest at most 32 deep (`arrange.group` refuses more), as deep as PPTX import reads and slides draw: a deck grouped 39 or more levels deep saved without complaint and then could not be opened again |
 | 2026-10-20 | Chart number formats with explicit empty positive, negative or zero sections hide the corresponding labels, including all values with three semicolons; a blank whole format still uses General. Synthetic formatter regressions |
+| 2026-10-22 | Chart bars and their legend keys draw the series' own pattern fill (`a:pattFill`, now read and written) and draw nothing for `a:noFill`, with the series outline where it has one, as PowerPoint for Mac does (synthetic probe); they took the palette's colour before. Lines, areas and markers use a pattern's foreground colour |
+| 2026-10-21 | Reuse Slides: pick which slides of the other presentation to insert from a list (`slide.reuseList`, #1103) |
 | 2026-10-18 | Native chart sidecar bytes move from JSON arrays into referenced ZIP entries, with shared media byte/item limits and bounded reads; older inline sidecars still load. Synthetic format regressions cover large workbooks and malformed members |
 | 2026-10-18 | Slide thumbnails and the Slide Sorter render only the slides in view: on a deck of more than 600 slides they used to evict their own thumbnails, so the pane flashed white and never finished (#969) |
 | 2026-10-18 | Resizing with the mouse snaps the edge being dragged to the slide, guides and other shapes: a fixed edge that already lined up used to take the snap and leave the dragged edge free, and a fixed edge near a line shifted the dragged one (#961) |
@@ -158,14 +162,26 @@ app's JSON control channel (`deckcraft --control PORT`).
 | 2026-10-17 | While a placeholder's text is being edited, a click on a shape in front of it selects that shape instead of moving the caret, as in PowerPoint (#931) |
 | 2026-10-16 | Symbol-font characters: a run's U+F0xx symbol code (from `<a:sym typeface="Symbol"/>`) now draws from the installed Symbol face even when it has no private-use mapping — Apple's Symbol on macOS maps the glyphs to real Unicode, so the code is remapped to that character (the Adobe Symbol encoding) instead of falling to a look-alike. Bullets and metafile text take the same remap |
 | 2026-10-15 | Native saves keep an imported chart's embedded workbook, drawings and relationships; headless PPTX → edit → native save/reopen → PPTX tests verify the payloads and stale-workbook rejection |
+| 2026-10-18 | Charts: a series' own data-label setting is honoured — numbers PowerPoint shows on a graph no longer disappear, and a bare `c:showVal` means on (#868) |
+| 2026-10-15 | Render: quick styles render on empty placeholders — the fill gate now checks for style and line overrides too (#832) |
+| 2026-10-15 | Canvas: the resize cursor follows the handle's rotated diagonal — rotated shapes showed the wrong diagonal cursor (#745) |
+| 2026-10-20 | Tests: the Options dialog's Cancel, Esc and close button put the settings back the way they were (#878) |
+| 2026-10-20 | Tests: Ctrl+A in the slide sorter selects every slide, as in PowerPoint (#936) |
+| 2026-10-18 | Thumbnails: navigating slides with the arrow keys scrolls the thumbnail pane to keep the current slide visible (#917) |
 | 2026-10-15 | PPTX trigger sequences keep separate On Click steps, including paragraph builds; synthetic import/edit/save/reopen and headless show regressions |
 | 2026-10-16 | Export: PNG with a transparent background — the slide background is left out, only the slide's content is drawn (Export… dialog, File › Export, web download, `file.export`/`file.render` `transparentBackground`, `deckcraft-cli render --transparent`) (#784) |
 | 2026-10-16 | Arrange ▸ Align: Align to Slide and Align Selected Objects, as in PowerPoint. One object aligns to the slide and several to each other until the other choice is ticked; the choice holds for that selection and also drives Distribute |
 | 2026-10-16 | Fitted canvas: discrete mouse-wheel steps navigate immediately, including rapid and batched input, while trackpad gestures retain their cooldown and zoomed slides still pan. |
+| 2026-10-16 | PPTX import: a paragraph build edited in PowerPoint (paragraphs with their own start, other shapes' effects in between, builds by 2nd-level paragraphs) takes PowerPoint's clicks in the show; it used to be rebuilt as one build, 34 clicks instead of 10 on the reporter's slide. Paragraph builds with sub-points save as PowerPoint writes them (#844) |
 | 2026-10-15 | CLI: .txt and .md export includes table cell text, which it used to skip silently (#814) |
 | 2026-10-15 | A `.pptx` slide that can't be read is reported, not dropped in silence: `lostSlides` from `file.open`, a message and a repaired copy in the app, a warning from `deckcraft-cli` (#203) |
 | 2026-10-16 | AutoFormat as you type: ordinals (1st, 22nd, 103rd) get superscript suffixes after a space or punctuation; Tools ▸ AutoCorrect and `text.autocorrect {ordinals}` turn it off |
 | 2026-10-16 | A PowerPoint Show (`.ppsx`) opened from the command line or the file association starts its slide show, as in PowerPoint; File › Open still opens it for editing (#862) |
+| 2026-10-15 | Canvas: the Format and Animation Painter override the cursor to show the tool is armed (#830) |
+| 2026-10-15 | Edit Points: right-click a segment for Straight/Curved Segment, a point for Open/Close Path (`shape.segmentType`, `shape.openPath`, `shape.closePath`); Delete Segment and Add Point in the menu still to come |
+| 2026-10-15 | Design › Browse for Themes… with a `.pptx` or `.potx` brings its slide master and layouts, not just the theme: the master the current slide uses is replaced (a preserved one stays beside it), the template stretches to the deck's slide size, and each slide moves to the layout with the same name or kind and keeps its content. One undo step (#807) |
+| 2026-10-15 | Clicking the frame of a text box or placeholder selects the box whole, so it can be moved, duplicated or deleted; only a click inside puts the caret in the text (#787) |
+| 2026-10-15 | Review › Compare: Reject and Reject All drop revisions without applying them (`review.reject`); Accept All skips what was rejected |
 | 2026-10-15 | PDF export and rendering: `anchorCtr` centres the drawn text block — right-aligned text no longer ran past the box edge (#736) |
 | 2026-10-14 | connected MCP rejects unrelated, malformed, incomplete and oversized replies without replay; buffered unsolicited bytes force a fresh connection before sending (#718) |
 | 2026-10-14 | Empty bulleted and numbered paragraphs show gray markers while editing, including on first click and after Enter. Markers use the list style and stay out of slide shows and exports. |
@@ -265,6 +281,7 @@ app's JSON control channel (`deckcraft --control PORT`).
 | 2026-10-22 | trivial | Progress log: Animation Pane ▸ Play From. Scores unchanged |
 | 2026-10-23 | trivial | Progress log: scroll bars on the zoomed slide pane (#1157). Scores and milestone names unchanged |
 | 2026-10-20 | trivial | Explicit empty chart number-format sections hide their values; blank whole-code General fallback is retained. Synthetic formatter regressions; chart-element scores and readiness estimates unchanged |
+| 2026-10-21 | trivial | Progress log: Reuse Slides picker (#1103). Scores and milestone names unchanged |
 | 2026-10-18 | minor | Native chart payloads use referenced ZIP members and share media byte/item limits; old inline sidecars remain readable. Synthetic tests cover multi-megabyte layout, all shape owners, shared budgets, missing/corrupt members and invalid references. Scores and milestone scope unchanged |
 | 2026-10-16 | minor | Symbol-font U+F0xx codes remap to the installed Symbol face's real Unicode (Apple Symbol on macOS) |
 | 2026-10-15 | trivial | Progress log: chart package parts survive a native save. Scores and milestone names unchanged |
@@ -276,6 +293,10 @@ app's JSON control channel (`deckcraft --control PORT`).
 | 2026-10-16 | trivial | Progress log: responsive mouse-wheel navigation on the fitted canvas |
 | 2026-10-21 | trivial | Progress log: theme `spDef` anchor no longer applied to a file's own shapes |
 | 2026-10-21 | trivial | Progress log: 3-D sizes in scaled groups stay in points |
+| 2026-10-22 | trivial | Progress log: chart series pattern and no fills |
+| 2026-10-15 | trivial | Progress log: Browse for Themes applies a template's master and layouts (#807) |
+| 2026-10-15 | trivial | Progress log: Compare Reject and Reject All |
+| 2026-10-16 | trivial | Progress log: PPTX paragraph builds edited in PowerPoint keep their clicks (#844) |
 | 2026-10-14 | trivial | remote MCP checks reply IDs, envelopes and bounded newline framing (#718) |
 | 2026-10-14 | minor | Gray list markers on empty paragraphs while editing; caret keeps the list indent before typing |
 | 2026-10-14 | minor | Community PR wave folded: headline breadth 84% over 191 features (P0 92%, P1 82%, P2 55%) and the feature-area breadths from `cargo xtask parity`; one row per area; Upcoming item 2 merged; per-PR count notes dropped from the progress log. Ready stays ~55%, stage alpha |
