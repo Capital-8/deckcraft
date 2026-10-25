@@ -76,6 +76,8 @@ fn create_inserts_the_album_in_one_step() {
     assert_eq!(text, ["Text Box"]);
 }
 
+/// Updating photo-album data reflows the already-open album without requiring it to be
+/// reopened.
 #[test]
 fn update_reflows_the_open_album() {
     let data = deckcraft_engine::cmd::base64_encode(&png());

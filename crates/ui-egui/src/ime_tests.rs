@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::{Services, SlideApp};
 use deckcraft_engine::Session;
 
+/// Build the standard 1280×800 UI harness around a supplied session and run three frames.
 fn harness(session: Session) -> egui_kittest::Harness<'static, SlideApp> {
     let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(
         |ui, app: &mut SlideApp| {
@@ -868,6 +869,8 @@ fn text_of(h: &egui_kittest::Harness<'static, SlideApp>, id: u32) -> String {
         .unwrap_or_default()
 }
 
+/// Open the title editor on `abcd`, select the text, and return the caret point used for
+/// pointer interruption.
 fn pending_terminal_editor() -> (egui_kittest::Harness<'static, SlideApp>, egui::Pos2) {
     let mut h = harness(Session::with_new());
     let title = h.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
@@ -884,6 +887,8 @@ fn pending_terminal_editor() -> (egui_kittest::Harness<'static, SlideApp>, egui:
     (h, point)
 }
 
+/// Clear a pending pre-edit and assert that the visible text and undo length are unchanged and
+/// no platform interrupt was requested.
 fn clear_pending_preedit(h: &mut egui_kittest::Harness<'_, SlideApp>) {
     let undo = undo_len(h.state());
     h.event(preedit("Q"));
@@ -897,6 +902,7 @@ fn clear_pending_preedit(h: &mut egui_kittest::Harness<'_, SlideApp>) {
     assert!(!h.output().platform_output.ime.as_ref().unwrap().should_interrupt_composition, "empty preedit is not a platform reset");
 }
 
+/// Build the terminal `DeleteSurrounding` event in character or byte units.
 fn pending_terminal_delete(bytes: bool) -> Event {
     Event::Ime(if bytes {
         ImeEvent::DeleteSurroundingBytes { before_bytes: 1, after_bytes: 0 }
@@ -905,6 +911,8 @@ fn pending_terminal_delete(bytes: bool) -> Event {
     })
 }
 
+/// A pointer interruption after clearing pre-edit rejects both later `DeleteSurrounding` and
+/// commit forms.
 #[test]
 fn cleared_preedit_pointer_interruption_rejects_later_delete_and_terminal_commit() {
     for bytes in [false, true] {
@@ -954,6 +962,8 @@ fn cleared_preedit_pointer_interruption_rejects_later_delete_and_terminal_commit
     }
 }
 
+/// A key interruption after clearing pre-edit rejects a terminal event delivered in a different
+/// batch.
 #[test]
 fn cleared_preedit_key_interruption_rejects_a_terminal_in_a_later_batch() {
     for bytes in [false, true] {
@@ -977,6 +987,7 @@ fn cleared_preedit_key_interruption_rejects_a_terminal_in_a_later_batch() {
     }
 }
 
+/// Replacing the editing target rejects stale terminal mutations from the old composition.
 #[test]
 fn cleared_preedit_target_replacement_rejects_later_terminal_mutations() {
     for bytes in [false, true] {
@@ -1016,6 +1027,8 @@ fn cleared_preedit_target_replacement_rejects_later_terminal_mutations() {
     }
 }
 
+/// Closing the last document clears pending terminal state, and a new document needs no
+/// stale-composition fence.
 #[test]
 fn closing_the_last_document_clears_a_pending_preedit_terminal() {
     let (mut h, _) = pending_terminal_editor();
@@ -1050,6 +1063,7 @@ fn closing_the_last_document_clears_a_pending_preedit_terminal() {
     assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
 }
 
+/// After a plain clear, both character- and byte-count terminal deletes are accepted.
 #[test]
 fn cleared_preedit_without_interruption_accepts_both_terminal_delete_forms() {
     for bytes in [false, true] {
@@ -1065,6 +1079,8 @@ fn cleared_preedit_without_interruption_accepts_both_terminal_delete_forms() {
     }
 }
 
+/// A clear accepts its own commit, then permits a direct commit and a fresh composition without
+/// stale state.
 #[test]
 fn cleared_preedit_accepts_its_commit_then_direct_and_fresh_compositions() {
     let (mut h, _) = pending_terminal_editor();
@@ -1087,14 +1103,18 @@ fn cleared_preedit_accepts_its_commit_then_direct_and_fresh_compositions() {
 // Token-bound IME reset adoption (revision02): opaque id + ordered completion.
 // ---------------------------------------------------------------------------
 
+/// Build the ordered reset-completion event for a request id.
 fn reset_completed(id: egui::ImeResetId) -> Event {
     Event::ImeResetCompleted { request_id: id }
 }
 
+/// Return the custom descriptor's currently published reset id, asserting that a token-bound
+/// request exists.
 fn published_reset(h: &egui_kittest::Harness<'static, SlideApp>) -> egui::ImeResetId {
     h.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request).expect("the custom descriptor carries a token-bound reset request")
 }
 
+/// Read the reset phase recorded for the root viewport.
 fn root_phase(h: &egui_kittest::Harness<'static, SlideApp>) -> crate::ImeResetPhase {
     h.state().ime_reset_for(egui::ViewportId::ROOT)
 }
@@ -1106,6 +1126,7 @@ fn viewport_input(viewport: egui::ViewportId) -> egui::RawInput {
     input
 }
 
+/// Read the reset phase for an arbitrary viewport, defaulting to `Clear` when none is stored.
 fn phase_at(h: &egui_kittest::Harness<'static, SlideApp>, viewport: egui::ViewportId) -> crate::ImeResetPhase {
     h.state().ime_reset_for(viewport)
 }
@@ -1156,6 +1177,8 @@ fn settled_title_reset(h: &mut egui_kittest::Harness<'static, SlideApp>) -> egui
     id
 }
 
+/// Only the exact ordered completion releases the fence; a fresh suffix survives while a stale
+/// prefix is discarded.
 #[test]
 fn ordered_reset_completion_is_exact_and_fresh_suffix_survives_stale_prefix() {
     let mut h = harness(Session::with_new());
@@ -1198,6 +1221,7 @@ fn ordered_reset_completion_is_exact_and_fresh_suffix_survives_stale_prefix() {
     assert_eq!(title_text(h.state()), "日YZW", "the exact new completion admits the same-batch suffix");
 }
 
+/// Waiting frames without the exact completion emit no replacement token and keep input blocked.
 #[test]
 fn no_completion_fails_closed_and_unchanged_waiting_frames_do_not_emit_new_requests() {
     let mut h = harness(Session::with_new());
@@ -1215,6 +1239,7 @@ fn no_completion_fails_closed_and_unchanged_waiting_frames_do_not_emit_new_reque
     assert_eq!(title_text(h.state()), "日Y", "the exact completion is the only release");
 }
 
+/// A discarded final `None` suspends the guard; returning to the same editor publishes a new id.
 #[test]
 fn discarded_final_none_suspends_and_the_same_editor_rearms_with_a_new_id() {
     let mut h = harness(Session::with_new());
@@ -1244,6 +1269,7 @@ fn discarded_final_none_suspends_and_the_same_editor_rearms_with_a_new_id() {
     assert_eq!(title_text(h.state()), "日Y");
 }
 
+/// A real modal without a discarded pass suspends the guard and publishes no speculative token.
 #[test]
 fn actual_modal_without_discard_suspends_and_queues_no_token() {
     let mut h = harness(Session::with_new());
@@ -1283,6 +1309,8 @@ fn actual_modal_without_discard_suspends_and_queues_no_token() {
     assert_eq!(title_text(h.state()), "日Y");
 }
 
+/// A modal-owned observe/finalizer pass rejects a matching custom descriptor before allocating a
+/// token.
 #[test]
 fn modal_observe_and_finalizer_reject_a_matching_custom_descriptor_before_allocation() {
     let mut h = harness(Session::with_new());
@@ -1326,6 +1354,8 @@ fn modal_observe_and_finalizer_reject_a_matching_custom_descriptor_before_alloca
     assert!(ctx.output(|o| o.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none())), "no token was added to the modal output");
 }
 
+/// Opening, Backstage, palette, and modal routes all report that the custom canvas cannot own
+/// input.
 #[test]
 fn opening_backstage_palette_and_modal_routes_are_explicitly_ineligible() {
     let mut h = harness(Session::with_new());
@@ -1350,6 +1380,8 @@ fn opening_backstage_palette_and_modal_routes_are_explicitly_ineligible() {
     assert!(!h.state().ime_custom_canvas_route(&h.ctx), "a modal owns input");
 }
 
+/// Stock focused controls keep their own descriptor; Backstage/no-editor routes suspend and then
+/// re-arm once on return.
 #[test]
 fn stock_focus_backstage_and_no_editor_routes_preserve_stock_output_and_rearm() {
     // A focused stock TextEdit keeps its own descriptor; the custom fence is suspended.
@@ -1413,6 +1445,8 @@ fn stock_focus_backstage_and_no_editor_routes_preserve_stock_output_and_rearm() 
     assert_eq!(title_text(h.state()), "日Y日Z日K");
 }
 
+/// Full logic+UI passes do not re-arm, while standalone logic suspends exactly once without
+/// replaying input.
 #[test]
 fn full_logic_ui_passes_do_not_rearm_while_standalone_logic_suspends_once() {
     let mut h = harness(Session::with_new());
@@ -1445,6 +1479,8 @@ fn full_logic_ui_passes_do_not_rearm_while_standalone_logic_suspends_once() {
     assert!(h.output().platform_output.ime.as_ref().is_some_and(|ime| ime.reset_request.is_none()));
 }
 
+/// A terminal change observed only in standalone logic never queues a token for a later stock
+/// route.
 #[test]
 fn standalone_logic_changed_terminal_never_queues_a_token_for_the_next_stock_route() {
     let (mut h, _) = pending_terminal_editor();
@@ -1486,6 +1522,7 @@ fn standalone_logic_changed_terminal_never_queues_a_token_for_the_next_stock_rou
     assert_eq!(title_text(h.state()), "aYbcd", "the exact replacement admits the fresh suffix at the real caret");
 }
 
+/// The exact completion admits a fresh suffix without admitting the old terminal commit.
 #[test]
 fn cleared_preedit_exact_completion_admits_fresh_suffix_without_the_old_terminal_commit() {
     // Same batch: the exact completion is the platform-reset boundary; no old Commit,
@@ -1545,6 +1582,7 @@ fn cleared_preedit_exact_completion_admits_fresh_suffix_without_the_old_terminal
     assert_eq!(undo_len(h.state()), undo + 1);
 }
 
+/// Repeating the exact completion after `Clear` changes no composition or undo state.
 #[test]
 fn duplicate_exact_completion_after_clear_is_inert() {
     let mut h = harness(Session::with_new());
@@ -1582,6 +1620,8 @@ fn duplicate_exact_completion_after_clear_is_inert() {
     assert_eq!(title_text(h.state()), "日YZW");
 }
 
+/// The font-install early return suspends without a token, and returning to the editor re-arms
+/// once.
 #[test]
 fn font_install_early_return_suspends_without_a_speculative_token_and_rearms_once() {
     let mut h = harness(Session::with_new());
@@ -1621,6 +1661,8 @@ fn font_install_early_return_suspends_without_a_speculative_token_and_rearms_onc
     assert_eq!(title_text(h.state()), format!("{before}Y"));
 }
 
+/// The palette route retires the guard without a token; returning to the canvas publishes one
+/// replacement.
 #[test]
 fn palette_route_retires_the_guard_without_a_speculative_token_and_rearms_once() {
     let mut h = harness(Session::with_new());
@@ -1650,6 +1692,7 @@ fn palette_route_retires_the_guard_without_a_speculative_token_and_rearms_once()
     assert_eq!(title_text(h.state()), format!("{before}Y"));
 }
 
+/// A render-only viewport cannot mutate the root composition or bind the root reset guard.
 #[test]
 fn render_only_viewports_cannot_mutate_root_composition_or_bind_the_root_guard() {
     let (mut h, _) = pending_terminal_editor();
@@ -1697,6 +1740,7 @@ fn render_only_viewports_cannot_mutate_root_composition_or_bind_the_root_guard()
     assert!(matches!(root_phase(&h), crate::ImeResetPhase::Clear));
 }
 
+/// A suspended guard or request stamped for another viewport is never rebound to root.
 #[test]
 fn a_suspended_guard_or_request_stamped_for_another_viewport_is_never_rebound() {
     let mut h = harness(Session::with_new());
@@ -1724,6 +1768,7 @@ fn a_suspended_guard_or_request_stamped_for_another_viewport_is_never_rebound() 
     assert_eq!(title_text(h.state()), "日Y");
 }
 
+/// Sorter and Notes Page stock routes allocate no custom reset token when a composition settles.
 #[test]
 fn sorter_and_notes_page_settles_never_allocate_for_a_stock_route() {
     for (view, command) in [(crate::ViewMode::Sorter, "view.sorter"), (crate::ViewMode::NotesPage, "view.notesPage")] {
@@ -1787,6 +1832,8 @@ fn sorter_and_notes_page_settles_never_allocate_for_a_stock_route() {
     }
 }
 
+/// A same-pass switch from custom canvas to stock palette retires the guard without publishing a
+/// token.
 #[test]
 fn same_pass_custom_to_stock_palette_retires_the_guard_without_a_new_token() {
     let mut h = harness(Session::with_new());
@@ -1864,6 +1911,8 @@ fn same_pass_custom_to_stock_palette_retires_the_guard_without_a_new_token() {
     assert_eq!(title_text(h.state()), "日Y");
 }
 
+/// Closing and creating a deck before a pass keeps the old terminal fence until its exact reset
+/// completion.
 #[test]
 fn close_new_then_edit_before_a_pass_keeps_the_old_terminal_fence_until_exact_reset() {
     let (mut h, _) = pending_terminal_editor();

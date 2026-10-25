@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::SlideApp;
 use crate::theme::{self, Tokens};
 
+/// Render the slide thumbnail pane, including section headers, selection, and scroll state.
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let in_master = app.session.active().is_some_and(|d| d.selection.target != Target::Slides);
@@ -40,6 +41,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     }
 }
 
+/// Render the scrollable thumbnail list, scrolling the current slide into view when it changes.
 fn list(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };

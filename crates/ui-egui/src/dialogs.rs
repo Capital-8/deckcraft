@@ -77,6 +77,8 @@ fn title(id: &str) -> &'static str {
     }
 }
 
+/// Render the active dialog, clearing it when dismissed and preserving or restoring application
+/// state as its close path requires.
 pub fn show(app: &mut SlideApp, ctx: &egui::Context) {
     let Some(mut d) = app.dialog.take() else { return };
     let mut open = true;
@@ -182,6 +184,8 @@ fn restore_preferences(app: &mut SlideApp, d: &Dialog) {
     }
 }
 
+/// Draw a labelled single-line field bound to `key`, falling back to `default`, and store the
+/// edited value in the dialog.
 fn field(ui: &mut Ui, d: &mut Dialog, label: &str, key: &str, default: &str) {
     let mut v = d.get(key, default);
     ui.horizontal(|ui| {
@@ -278,6 +282,8 @@ fn pick_album_picture(app: &mut SlideApp) -> Option<Value> {
     Some(json!({"name": name, "data": deckcraft_engine::cmd::base64_encode(&loaded)}))
 }
 
+/// Draw an accessible album combo box, preserving its current/default selection and storing a
+/// newly chosen key; the caller supplies the visible label.
 fn album_choice(ui: &mut Ui, d: &mut Dialog, id: &str, name: &str, key: &str, default: &str, choices: &[(&str, &str)]) {
     let cur = d.get(key, default);
     let label = choices.iter().find(|(k, _)| *k == cur).map(|(_, l)| *l).unwrap_or(default);
@@ -564,6 +570,7 @@ fn seed_theme_colors(d: &mut Dialog) {
     d.fields.insert("seeded".into(), "1".into());
 }
 
+/// Draw one theme-colour row with its hex editor and store the value for the scheme slot.
 fn theme_color_row(ui: &mut Ui, d: &mut Dialog, slot: SchemeSlot) {
     let key = slot.xml_name();
     let mut v = d.get(key, "000000");
@@ -670,6 +677,8 @@ fn theme_font_choices(app: &SlideApp, selected: &str) -> Vec<String> {
     v
 }
 
+/// Draw an accessible font combo box and update the selected family; the caller supplies the
+/// visible label.
 fn font_combo(ui: &mut Ui, label: &str, choices: &[String], selected: &mut String) {
     let resp = egui::ComboBox::from_id_salt(label).selected_text(selected.as_str()).width(240.0).show_ui(ui, |ui| {
         for face in choices {
@@ -2537,6 +2546,7 @@ fn size_position_value(d: &Dialog) -> Result<Value, String> {
     Ok(json!({"x": x, "y": y, "w": w, "h": h, "rot": rot, "lockAspect": field_of(d, "lock") == "1"}))
 }
 
+/// Draw a labelled single-line text row bound to a dialog key and store the edited value.
 fn text_row(ui: &mut Ui, d: &mut Dialog, label: &str, key: &str) {
     let mut v = field_of(d, key);
     ui.horizontal(|ui| {
@@ -2602,6 +2612,8 @@ fn date_rows(lang: &str) -> Vec<(&'static str, String)> {
     rows
 }
 
+/// Render language and format controls; OK applies `insert.dateTime`, and the return value says
+/// whether the dialog should close.
 fn date_time_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     ui.set_min_width(440.0);
     ui.label("Available formats:");
@@ -2904,6 +2916,8 @@ fn seed_font_fields(d: &mut Dialog) {
     seed_once(d, "colorSeed", shown);
 }
 
+/// Draw a uniquely identified accessible choice combo box and store the selected key;
+/// the caller supplies the visible label.
 fn choice(ui: &mut Ui, d: &mut Dialog, salt: &str, name: &str, key: &str, choices: &[(&str, &str)]) {
     let cur = d.get(key, "");
     let label = choices.iter().find(|(v, _)| *v == cur).map(|(_, l)| *l).unwrap_or(cur.as_str());

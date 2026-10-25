@@ -105,6 +105,7 @@ fn row_id(id: u32) -> Id {
     Id::unique(("selection_pane_row", id))
 }
 
+/// Draw a small labelled icon button and return its interaction response.
 fn small_icon_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), if enabled { Sense::click() } else { Sense::hover() });
@@ -117,6 +118,8 @@ fn small_icon_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> egu
     resp.on_hover_text(label)
 }
 
+/// Render the Selection Pane and route visibility, order, rename, and selection actions through
+/// engine commands.
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };

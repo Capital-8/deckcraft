@@ -70,6 +70,8 @@ struct Header<'a> {
     first: Option<u32>,
 }
 
+/// Render one slide-sorter section header, handle its collapse/drag interactions, and return the
+/// occupied rectangle.
 fn section_header(app: &mut SlideApp, ui: &mut Ui, h: &Header<'_>) -> Rect {
     let t = Tokens::get(ui.ctx());
     let width = ui.available_width();

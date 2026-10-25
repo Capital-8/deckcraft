@@ -11,6 +11,8 @@ const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm"];
 const CANVAS_ID: &str = "deckcraft_canvas";
 const LOADING_ID: &str = "deckcraft_loading";
 
+/// Start the browser shell: install logging, locate the canvas, launch the eframe runner,
+/// build the sample or blank deck, and replace the loading element when launch finishes.
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     wasm_bindgen_futures::spawn_local(async {
@@ -75,10 +77,13 @@ struct WebShell {
 }
 
 impl eframe::App for WebShell {
+    /// Delegate one eframe logic pass to the wrapped application.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.logic(ctx);
     }
 
+    /// Consume browser drops with fresh input, capture the identity before the asynchronous read,
+    /// and deliver the id, name, and bytes through the inbox.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         // Browsers cannot read dropped files synchronously. Consume this pass's drops here, with
         // fresh input, and capture the document/slide before the asynchronous read finishes.

@@ -16,6 +16,8 @@ use std::path::PathBuf;
 /// CJK rebrand of Source Han on any platform).
 const EXCLUDED_FAMILIES: &[&str] = &["Source Sans 3", "Source Serif 4", "Source Han Sans", "Source Han Serif"];
 
+/// Reject source families prohibited by the asset policy, including Source Han and every
+/// Noto CJK/Serif/Mono CJK variant.
 fn is_excluded_family(family: &str) -> bool {
     EXCLUDED_FAMILIES.contains(&family)
         || family.starts_with("Source Han Sans")
@@ -34,12 +36,15 @@ struct FontInput {
 }
 
 impl FontInput {
+    /// Concatenate another input's generated source and embedded-face list into this one.
     fn append(&mut self, other: Self) {
         self.source.push_str(&other.source);
         self.faces.extend(other.faces);
     }
 }
 
+/// Read font-input environment and target architecture, write `craft_fonts.rs`, report font-input
+/// failures as warnings unless required, and always fail when the generated file cannot be written.
 fn main() {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
@@ -64,6 +69,7 @@ fn input_fonts(dir: Option<&std::path::Path>, wasm: bool, required: bool) -> Res
     load_fonts(dir, wasm, required).map(|input| input.source)
 }
 
+/// Use no fonts when the directory is absent unless required; otherwise load the manifests.
 fn load_fonts(dir: Option<&std::path::Path>, wasm: bool, required: bool) -> Result<FontInput, String> {
     match dir {
         Some(dir) => craft_fonts(dir, wasm, required),
@@ -72,6 +78,8 @@ fn load_fonts(dir: Option<&std::path::Path>, wasm: bool, required: bool) -> Resu
     }
 }
 
+/// Load optional Latin input, required main input, and native-only Chinese input, then validate
+/// the promised required faces after filtering.
 fn craft_fonts(dir: &std::path::Path, wasm: bool, required: bool) -> Result<FontInput, String> {
     let mut input = FontInput::default();
     // The Latin presentation fonts are optional within craft-fonts (older checkouts lack them).
@@ -126,6 +134,8 @@ fn craft_fonts(dir: &std::path::Path, wasm: bool, required: bool) -> Result<Font
     Ok(input)
 }
 
+/// Parse one manifest, reject malformed rows, exclude banned families, apply the wasm filter,
+/// canonicalise assets, and emit initialisers.
 fn manifest(dir: &std::path::Path, manifest: &std::path::Path, wasm: bool) -> Result<FontInput, String> {
     println!("cargo::rerun-if-changed={}", manifest.display());
     let text = std::fs::read_to_string(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
@@ -199,6 +209,7 @@ mod tests {
     struct InputFixture(PathBuf);
 
     impl InputFixture {
+        /// Test helper: create a unique temporary fixture with a main manifest and asset file.
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("deck-font-input-{}-{}", std::process::id(), NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)));
             std::fs::create_dir(&path).unwrap();
@@ -213,18 +224,22 @@ mod tests {
             Self(path)
         }
 
+        /// Test helper: replace the fixture's main manifest contents.
         fn main(&self, text: &str) {
             std::fs::write(self.0.join("fonts/manifest.txt"), text).unwrap();
         }
 
+        /// Test helper: write the fixture's optional Latin manifest.
         fn latin(&self, text: &str) {
             std::fs::write(self.0.join("fonts/latin-manifest.txt"), text).unwrap();
         }
 
+        /// Test helper: remove the optional Latin manifest.
         fn no_latin(&self) {
             let _ = std::fs::remove_file(self.0.join("fonts/latin-manifest.txt"));
         }
 
+        /// Test helper: install a valid Inter Regular/Bold Latin manifest.
         fn valid_latin(&self) {
             self.latin(
                 "Inter | Regular | fonts/fixture.ttf | Latn | OFL-1.1 | OFL.txt | fixture | https://example.invalid\n\
@@ -232,23 +247,28 @@ mod tests {
             );
         }
 
+        /// Test helper: write the optional native Chinese manifest with the supplied rows.
         fn optional(&self, text: &str) {
             std::fs::write(self.0.join("fonts/simplified-chinese-manifest.txt"), text).unwrap();
         }
     }
 
     impl Drop for InputFixture {
+        /// Test helper: best-effort removal of the temporary fixture directory.
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
+    /// A required build without a font directory fails; an optional build embeds no fonts.
     #[test]
     fn required_input_cannot_silently_disappear() {
         assert!(input_fonts(None, false, true).unwrap_err().contains("CRAFT_FONTS_DIR"));
         assert_eq!(input_fonts(None, false, false).unwrap(), "");
     }
 
+    /// A malformed optional Chinese manifest, or one naming a missing asset, leaves the main catalog
+    /// unchanged in optional builds, while a required build fails.
     #[test]
     fn broken_optional_manifest_preserves_the_main_fonts() {
         let fixture = InputFixture::new();
@@ -261,6 +281,7 @@ mod tests {
         assert!(input_fonts(Some(&fixture.0), false, true).is_err());
     }
 
+    /// Adding or breaking native Chinese input must not change the wasm font initialiser bytes.
     #[test]
     fn native_opt_in_does_not_change_wasm_embedded_bytes() {
         let fixture = InputFixture::new();
@@ -274,6 +295,8 @@ mod tests {
         assert_eq!(input_fonts(Some(&fixture.0), true, true).unwrap(), before);
     }
 
+    /// Required native builds fail without the Chinese manifest; optional native and wasm builds
+    /// stay valid.
     #[test]
     fn required_native_input_requires_the_chinese_manifest() {
         let fixture = InputFixture::new();
@@ -284,6 +307,8 @@ mod tests {
         assert!(input_fonts(Some(&fixture.0), true, true).is_ok());
     }
 
+    /// Every prohibited Source Han/Noto CJK family is excluded while permitted CJK, Latin, and
+    /// Hebrew faces survive.
     #[test]
     fn all_noto_cjk_families_are_excluded_from_every_platform() {
         for family in [
@@ -316,6 +341,8 @@ mod tests {
         assert!(native.contains("LXGW WenKai Lite"), "the valid Chinese row is retained");
     }
 
+    /// A required native Chinese manifest must embed LXGW WenKai Lite Regular, not merely list a
+    /// nonempty manifest.
     #[test]
     fn required_native_chinese_manifest_must_emit_the_reviewed_face() {
         let fixture = InputFixture::new();
@@ -335,6 +362,8 @@ mod tests {
         assert!(native.contains("BIZ UDPGothic") && native.contains("Inter"), "the rest of the required catalog is retained");
     }
 
+    /// A broken optional Latin manifest is skipped as a unit, preserving main and valid Chinese
+    /// faces; required builds still fail.
     #[test]
     fn optional_broken_latin_manifest_is_skipped_without_losing_core_or_chinese() {
         let fixture = InputFixture::new();
@@ -357,6 +386,8 @@ mod tests {
         }
     }
 
+    /// The reviewed Latin catalog keeps 43 permitted faces plus BIZ and LXGW natively, while wasm
+    /// remains a three-face subset.
     #[test]
     fn full_prior_latin_catalog_keeps_permitted_native_families() {
         let fixture = InputFixture::new();
@@ -387,6 +418,8 @@ mod tests {
         }
     }
 
+    /// Required builds without the Latin catalog fail because Inter Regular/Bold (or Variable) is
+    /// mandatory.
     #[test]
     fn required_builds_need_the_latin_catalog_for_inter() {
         let fixture = InputFixture::new();
@@ -398,6 +431,8 @@ mod tests {
         }
     }
 
+    /// A single Inter weight, non-Inter substitutes, or excluded faces cannot satisfy the required
+    /// Inter contract.
     #[test]
     fn required_builds_reject_partial_or_unrelated_faces() {
         let fixture = InputFixture::new();
@@ -420,6 +455,8 @@ mod tests {
         }
     }
 
+    /// BIZ UDPGothic Regular is required on every platform; required native builds additionally
+    /// need Bold.
     #[test]
     fn required_builds_need_biz_udpgothic_regular() {
         let fixture = InputFixture::new();
@@ -454,6 +491,8 @@ mod tests {
         assert_eq!(web.matches("CraftFont {").count(), 3, "wasm keeps Inter Regular/Bold and BIZ Regular only");
     }
 
+    /// Required checks accept either static Inter Regular+Bold or a single Variable face, together
+    /// with BIZ.
     #[test]
     fn required_builds_accept_static_or_variable_inter_with_biz() {
         let fixture = InputFixture::new();

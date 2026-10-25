@@ -180,6 +180,8 @@ pub struct Backstage {
 }
 
 impl Backstage {
+    /// Construct the Backstage view at a page with the current document identity, so a replaced deck
+    /// can be detected.
     pub fn new(page: Page, docs: (usize, Option<u64>)) -> Backstage {
         Backstage {
             page,
@@ -437,6 +439,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
 
 // ---------------------------------------------------------------- side menu
 
+/// Draw one clickable Backstage navigation row and return its interaction response.
 fn nav_item(ui: &mut Ui, nav: Nav, bs: &Backstage, index: usize, t: &Tokens) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(NAV_W, ITEM_H), Sense::click());
     let selected = nav == Nav::Page(bs.page);
@@ -1247,6 +1250,7 @@ fn preview(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage, doc: &deckcraft_
     });
 }
 
+/// Draw a labelled icon button and return whether it was clicked while enabled.
 fn icon_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> bool {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), if enabled { Sense::click() } else { Sense::hover() });

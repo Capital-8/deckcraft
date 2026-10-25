@@ -26,6 +26,7 @@ fn harness() -> Harness<'static, SlideApp> {
     h
 }
 
+/// Test helper: stable unique id for the eyedropper test menu.
 fn menu() -> Id {
     Id::unique("test-menu")
 }

@@ -314,6 +314,8 @@ pub(crate) fn viewport_visible(ctx: &egui::Context) -> bool {
 }
 
 impl Show {
+    /// Initialise show state at the requested slide with reading/presenter modes; an out-of-range
+    /// slide starts an ended show.
     pub fn new(doc: &Presentation, from: usize, reading: bool, presenter: bool) -> Self {
         Show {
             instance: 0,
@@ -829,6 +831,8 @@ fn keyboard(ctx: &egui::Context, show: &mut Show, doc: &Presentation, now: f64, 
     keep
 }
 
+/// Draw and advance the active show, handling hidden frames, timing, input, transitions, and
+/// presenter/reading presentation.
 pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let Some((doc_uid, doc)) = app.session.active().map(|d| (d.uid, d.doc.clone())) else {
@@ -2094,6 +2098,7 @@ fn render_thumb(ctx: &egui::Context, show: &mut Show, doc: &Presentation, i: usi
     Some(tex)
 }
 
+/// Render the presenter window and set `keep` false when the user ends or closes the show.
 fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, now: f64, keep: &mut bool) {
     let cur = show.state.slide;
     let next = show.state.peek_next(doc);
@@ -3110,6 +3115,8 @@ mod tests {
         assert_eq!(st.slide, 0, "five Backs leave slide 2 (step {}, playing {})", st.step, st.playing);
     }
 
+    /// Click-target state follows show instance, reading/presenter modes, grid, and other layout
+    /// changes instead of retaining a stale target.
     #[test]
     fn input_state_tracks_the_modes_that_move_show_click_targets() {
         let session = deckcraft_engine::Session::with_new();

@@ -62,6 +62,7 @@ fn ime_in_ui_pass_key(viewport: egui::ViewportId) -> egui::Id {
     egui::Id::unique(("deckcraft-ime-in-ui-pass", viewport))
 }
 
+/// Stable key marking that the IME pass hooks are installed.
 fn ime_pass_hooks_key() -> egui::Id {
     egui::Id::unique(("deckcraft-ime-pass-hooks", "installed"))
 }
@@ -741,6 +742,8 @@ struct ImeDescriptorKey {
 }
 
 impl ImeDescriptorKey {
+    /// Construct the exact custom-IME descriptor identity from owner, context generation, and
+    /// purpose.
     fn new(owner: egui::Id, context_generation: u64, purpose: egui::IMEPurpose) -> Self {
         Self { owner, context_generation, purpose }
     }
@@ -765,6 +768,8 @@ enum ImeResetPhase {
 }
 
 impl ImeResetPhase {
+    /// Only `Clear` admits custom-canvas input; awaiting, suspended, and allocation-failed phases
+    /// remain fail-closed.
     fn blocks_custom_input(self) -> bool {
         !matches!(self, Self::Clear)
     }
@@ -783,6 +788,8 @@ fn grid_flag(p: &Value, key: &str) -> Result<Option<bool>, String> {
 }
 
 impl SlideApp {
+    /// Build application UI state, taking ownership of audio output and initialising media, dialogs,
+    /// synthetic input, and timing fields.
     pub fn new(session: Session, mut services: Services) -> Self {
         let audio_out = services.audio_out.take();
         SlideApp {
@@ -950,6 +957,8 @@ impl SlideApp {
         r
     }
 
+    /// Return the current document count plus the active document uid, so callers can detect a
+    /// replacement document rather than only an index change.
     pub(crate) fn docs_key(&self) -> (usize, Option<u64>) {
         // The document uid, not just its index: closing one presentation and opening another
         // must not look like the same document to the Backstage view or a queued input batch.
@@ -1428,6 +1437,8 @@ impl SlideApp {
         Ok(Some(from))
     }
 
+    /// Leave animation preview, stop editor-owned media, and create a show at the requested slide
+    /// with the current reading/presenter configuration; an out-of-range slide starts an ended show.
     pub fn start_show(&mut self, from: usize, reading: bool) {
         self.anim_preview = None;
         self.media.stop_owned(media::Owner::Editor);
@@ -2178,6 +2189,7 @@ impl SlideApp {
         Some(ImeDestination { owner: target.owner, revision: st.revision, anchor, caret })
     }
 
+    /// Use the recorded IME viewport only while it matches the current context viewport.
     fn ime_viewport_or(&self, ctx: &egui::Context) -> egui::ViewportId {
         self.ime_frame_viewport.filter(|v| *v == ctx.viewport_id()).unwrap_or_else(|| ctx.viewport_id())
     }
@@ -2188,6 +2200,7 @@ impl SlideApp {
         self.ime_reset.get(&viewport).copied().unwrap_or(ImeResetPhase::Clear)
     }
 
+    /// Store a non-clear reset phase for one viewport, or remove the entry when the phase is `Clear`.
     fn set_ime_reset(&mut self, viewport: egui::ViewportId, phase: ImeResetPhase) {
         if matches!(phase, ImeResetPhase::Clear) {
             let _ = self.ime_reset.remove(&viewport);
@@ -2237,6 +2250,8 @@ impl SlideApp {
         ctx.viewport_id() == egui::ViewportId::ROOT
     }
 
+    /// Report whether the current pass is a full UI pass for the IME-owning viewport rather than
+    /// standalone logic.
     fn ime_in_ui_pass(&self, ctx: &egui::Context) -> bool {
         let key = ime_in_ui_pass_key(self.ime_viewport_or(ctx));
         ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(false))
@@ -2380,6 +2395,8 @@ impl SlideApp {
         }
     }
 
+    /// Request one replacement IME reset token and record `Awaiting` on success or
+    /// `AllocationFailed` when no token can be allocated.
     fn request_ime_rearm(&mut self, ctx: &egui::Context, viewport: egui::ViewportId, destination: ImeDestination, output_context: ImeDescriptorKey) {
         match ctx.request_ime_reset(viewport) {
             Some(id) => self.set_ime_reset(viewport, ImeResetPhase::Awaiting { id, viewport, destination, output_context }),
@@ -3223,6 +3240,8 @@ impl SlideApp {
         self.finalize_ime_reset(&ctx, custom);
     }
 
+    /// Run the admitted root UI pass, including setup gating, panels, canvas, dialogs, overlays, and
+    /// show mode.
     fn ui_inner(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.ime_frame_viewport = Some(ctx.viewport_id());
@@ -3340,6 +3359,8 @@ impl SlideApp {
         self.pending_urls.push(url.to_string());
     }
 
+    /// Drain pending control requests, executing ordinary requests and admitting screenshots for
+    /// later saving and reply.
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
         while let Ok(req) = rx.try_recv() {
@@ -4821,6 +4842,7 @@ mod tests {
         assert_eq!(crate::canvas::page_flick(egui::vec2(4.0, 10.0)), None);
     }
 
+    /// Test helper: place the pointer over the canvas centre, inject wheel notches, and step once.
     fn mouse_wheel(harness: &mut egui_kittest::Harness<'static, SlideApp>, notches: &[f32]) {
         let centre = harness.state().canvas_rect.unwrap().center();
         let input = harness.input_mut();
@@ -4929,6 +4951,8 @@ mod tests {
         assert_eq!(slide_at(h.state()), 0, "switching away without a hover still drops the fraction");
     }
 
+    /// Wheel input over a zoomed canvas pans it, while the same input outside the canvas must not
+    /// navigate slides.
     #[test]
     fn mouse_wheel_over_a_zoomed_canvas_pans_and_outside_the_canvas_does_not_navigate() {
         let mut h = flick_harness();
@@ -5706,6 +5730,8 @@ mod tests {
     /// from the show state instead of inventing a paused-show policy.
     #[test]
     fn hidden_viewport_advances_show_and_presenter_clocks_from_logic() {
+        /// Nested helper in the hidden-show test: build root `RawInput` with the given time and
+        /// visibility flags.
         fn raw_at(time: f64, minimized: bool, occluded: bool) -> egui::RawInput {
             let mut raw = egui::RawInput { time: Some(time), ..Default::default() };
             raw.viewports.insert(
@@ -5768,6 +5794,8 @@ mod tests {
     /// Re-anchoring belongs to `show::ui`, which only runs on a real visible pass.
     #[test]
     fn overdue_visible_logic_does_not_reanchor_a_later_hidden_show() {
+        /// Nested helper in the overdue-logic test: build root `RawInput` with the given time and
+        /// visibility flags.
         fn raw_at(time: f64, minimized: bool, occluded: bool) -> egui::RawInput {
             let mut raw = egui::RawInput { time: Some(time), ..Default::default() };
             raw.viewports.insert(

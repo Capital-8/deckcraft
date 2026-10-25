@@ -133,6 +133,7 @@ fn f(p: &Value, k: &str) -> Option<f32> {
     p.get(k).and_then(Value::as_f64).map(|v| v as f32)
 }
 
+/// Dispatch one decoded control request and return an outcome for its caller to reply with.
 pub fn handle(app: &mut SlideApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -410,6 +411,8 @@ pub fn tool_kind(name: &str, preset: Option<&str>) -> Option<deckcraft_engine::T
     })
 }
 
+/// Encode and write a screenshot, or return inline base64 data, while enforcing the capture
+/// budgets and reporting encoding and write errors.
 pub fn save_screenshot(app: &mut SlideApp, image: &egui::ColorImage, path: Option<&str>) -> Value {
     let [w, h] = image.size;
     let inline = path.is_none();

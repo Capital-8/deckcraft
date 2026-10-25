@@ -204,6 +204,7 @@ fn color_button(
     });
 }
 
+/// Render the shape-format pane with fill/line, effects, size/properties, text, and picture tabs.
 fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
@@ -936,6 +937,8 @@ fn background(app: &mut SlideApp, ui: &mut Ui) {
     });
 }
 
+/// Render picture-fill background controls and route transparency, tiling, and tile geometry
+/// changes through the engine.
 fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_model::style::PictureFill) {
     use deckcraft_model::style::PictureMode;
     let alpha = pf.alpha.unwrap_or(1.0);
@@ -1018,6 +1021,7 @@ fn picture_background_options(app: &mut SlideApp, ui: &mut Ui, pf: &deckcraft_mo
     });
 }
 
+/// Render the animation pane and route its controls through the engine's animation commands.
 fn animation(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
@@ -1295,6 +1299,7 @@ fn focus_comment(app: &mut SlideApp, slide: usize, index: usize) {
     app.ui.comment_focus = Some((slide, index));
 }
 
+/// Render one comment card, preserving its slide/index identity and focus state through actions.
 fn comment_card(app: &mut SlideApp, ui: &mut Ui, slide: usize, index: usize, c: &deckcraft_model::Comment, focused: bool) {
     let t = Tokens::get(ui.ctx());
     let stroke = if focused { Stroke::new(2.0, t.accent) } else { Stroke::NONE };
@@ -1373,6 +1378,8 @@ struct IdeaThumbs {
     tex: Vec<(String, egui::TextureHandle, u32, u32)>,
 }
 
+/// Render per-slide Design Ideas and whole-presentation theme thumbnails; a click runs
+/// `design.applyIdea` or `design.theme`.
 fn designer(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.label(egui::RichText::new("Pick a design for this slide. Ideas are generated on your device.").color(t.text_dim));
@@ -1621,6 +1628,7 @@ mod tests {
         h.query_all_by_role(egui::accesskit::Role::Button).filter(|n| n.accesskit_node().label().is_some_and(|l| l.trim() == "Color")).count()
     }
 
+    /// Fill colour and transparency controls appear only for fill kinds they can actually modify.
     #[test]
     fn fill_color_and_transparency_show_only_where_they_change_the_fill() {
         let gradient = json!({"gradient": {"stops": [[0, "accent1"], [1, "accent2"]], "angle": 90}});
@@ -1645,6 +1653,7 @@ mod tests {
         }
     }
 
+    /// The picture-fill transparency slider reflects and edits the picture fill's own transparency.
     #[test]
     fn picture_fill_transparency_slider_shows_the_picture_transparency() {
         let mut h = fill_pane(Some(picture_fill(0.4)));

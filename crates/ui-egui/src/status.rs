@@ -115,6 +115,7 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
     });
 }
 
+/// Draw a small status icon with a tooltip and return its interaction response.
 fn small_icon(ui: &mut Ui, icon: Icon, tip: &str, on: bool) -> egui::Response {
     let resp = icon_button(ui, icon, on);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
@@ -151,6 +152,8 @@ fn shown_text(ui: &Ui, rect: Rect, id: &str, text: &str) {
     }
 }
 
+/// Draw a labelled status icon, painting the text directly and exposing the toggle state as its
+/// accessible selected state.
 fn labeled(ui: &mut Ui, icon: Icon, label: &str, on: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let w = 22.0 + ui.fonts_mut(|f| f.layout_no_wrap(label.into(), theme::font(12.0), t.text).size().x) + 8.0;

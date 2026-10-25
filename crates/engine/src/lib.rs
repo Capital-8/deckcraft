@@ -504,6 +504,8 @@ impl Default for Session {
 }
 
 impl Session {
+    /// Install the process panic hook and construct an empty session with default preferences,
+    /// clipboard, tool state, and no active document.
     pub fn new() -> Self {
         guard::install_panic_hook();
         Session {
@@ -613,6 +615,8 @@ impl Session {
         self.guarded(id, |s| s.execute_unguarded(id, params))
     }
 
+    /// Resolve and run a command, settling composition first, checking eligibility, rolling back a
+    /// failed outer command, and committing the resulting undo entry or journal record.
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         // Any other edit (or a click, a key, undo) settles an input method's composition first.

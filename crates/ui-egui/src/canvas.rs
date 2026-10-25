@@ -143,6 +143,8 @@ fn trackpad_scroll(events: &[egui::Event]) -> egui::Vec2 {
     })
 }
 
+/// Paint the editing canvas, including rulers, selection handles, overlays, and current
+/// zoom/scroll state.
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let avail = ui.available_rect_before_wrap();
@@ -1718,6 +1720,8 @@ mod tests {
         pos2((p.x - r.min.x) / s, (p.y - r.min.y) / s)
     }
 
+    /// Test helper: inject a platform-command-modified line wheel event and run thirty harness
+    /// steps.
     fn ctrl_wheel(h: &mut Harness<'_, SlideApp>, lines: f32) {
         let wheel = Event::MouseWheel {
             unit: MouseWheelUnit::Line,

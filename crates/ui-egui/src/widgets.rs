@@ -35,6 +35,7 @@ pub fn big_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Respon
 /// whole label area, so no visible line of a one- or two-line label can open the menu.
 const SPLIT_ARROW_W: f32 = 14.0;
 
+/// Return the chevron-only sub-rectangle at the right edge of a split button.
 fn split_arrow_rect(rect: Rect) -> Rect {
     Rect::from_min_max(pos2(rect.max.x - SPLIT_ARROW_W, rect.min.y + 38.0), rect.max)
 }
@@ -129,6 +130,8 @@ pub fn small_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selecte
     small_button_ex(ui, icon, label, enabled, selected, false).0
 }
 
+/// Draw a small named button, optionally with a separately named options chevron, and return
+/// both click targets.
 pub fn small_button_ex(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, selected: bool, split: bool) -> (Response, Option<Response>) {
     small_button_named(ui, icon, label, if label.is_empty() { "Options" } else { label }, enabled, selected, split)
 }
@@ -233,6 +236,7 @@ pub fn split_color_popup<'a>(main: &'a Response, arrow: &'a Response) -> egui::P
     popup
 }
 
+/// Derive the popup id from the main button response so a split menu follows that button.
 fn split_popup_id(main: &Response) -> egui::Id {
     main.id.with("split-menu")
 }
@@ -632,6 +636,8 @@ mod tests {
         let label = egui::pos2(main_rect.center().x, main_rect.min.y + 45.0);
         assert!(main_rect.contains(label) && !arrow_rect.contains(label), "the visible label is outside the chevron strip");
 
+        /// Nested large-split-button test helper: move and press/release the primary pointer at a
+        /// position.
         fn click(harness: &mut egui_kittest::Harness<'_, ()>, pos: egui::Pos2) {
             harness.input_mut().events.push(egui::Event::PointerMoved(pos));
             harness.run();
@@ -695,6 +701,8 @@ mod tests {
         let label_pixels = pos2(text.max.x - 1.0, text.center().y);
         assert!(!arrow_rect.contains(label_pixels));
 
+        /// Nested two-line-split-button test helper: move and press/release the primary pointer at a
+        /// position.
         fn click(harness: &mut egui_kittest::Harness<'_, ()>, pos: egui::Pos2) {
             harness.input_mut().events.push(egui::Event::PointerMoved(pos));
             harness.run();

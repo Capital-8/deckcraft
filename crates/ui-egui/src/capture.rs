@@ -175,6 +175,7 @@ pub struct CaptureSlot {
 }
 
 impl CaptureSlot {
+    /// Create a pending completion slot bound to one screenshot request token.
     fn new(token: u64) -> Self {
         Self { token, state: Mutex::new(SlotState::Pending) }
     }
@@ -204,6 +205,7 @@ impl CaptureSlot {
         true
     }
 
+    /// Atomically replace the slot with `Pending` and return its previous state.
     fn take(&self) -> SlotResult {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match std::mem::replace(&mut *state, SlotState::Pending) {
@@ -215,6 +217,7 @@ impl CaptureSlot {
         }
     }
 
+    /// Mark the slot cancelled so a later completion or drain cannot deliver an image.
     fn cancel(&self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *state = SlotState::Cancelled;
@@ -284,10 +287,12 @@ pub struct Capture {
 }
 
 impl Capture {
+    /// Report whether the maximum number of screenshot requests is already admitted.
     pub fn is_full(&self) -> bool {
         self.requests.len() >= MAX_REQUESTS
     }
 
+    /// Return the number of currently admitted screenshot requests.
     pub fn pending(&self) -> usize {
         self.requests.len()
     }
@@ -578,6 +583,7 @@ impl Capture {
 }
 
 impl Drop for Capture {
+    /// Cancel every outstanding completion when the capture registry is dropped.
     fn drop(&mut self) {
         for req in &self.requests {
             req.slot.cancel();
@@ -591,16 +597,20 @@ mod tests {
 
     use super::*;
 
+    /// Test helper: build a solid red `ColorImage` of the requested size.
     fn image(w: usize, h: usize) -> Arc<ColorImage> {
         Arc::new(ColorImage::new([w, h], vec![egui::Color32::RED; w * h]))
     }
 
+    /// Test helper: admit one `ui.screenshot` request and return its token and reply receiver.
     fn setup(cap: &mut Capture, now: web_time::Instant, path: Option<&str>) -> (u64, std::sync::mpsc::Receiver<ControlResponse>) {
         let (req, rx) = crate::ControlRequest::new("ui.screenshot", json!({}));
         cap.admit(path.map(str::to_string), req.reply.clone(), Some(7), now).unwrap();
         (cap.requests.last().unwrap().token, rx)
     }
 
+    /// Filling the registry to `MAX_REQUESTS` reports full; cancelling after a late completion
+    /// leaves no image.
     #[test]
     fn admission_is_bounded_and_late_cancel_keeps_no_image() {
         let now = web_time::Instant::now();
@@ -615,6 +625,7 @@ mod tests {
         assert!(matches!(slot.take(), SlotResult::Cancelled), "a completion after cancel retains nothing");
     }
 
+    /// A completion carrying a different request token cannot complete the tracked slot.
     #[test]
     fn one_shot_token_correlation_ignores_a_foreign_completion() {
         let now = web_time::Instant::now();
@@ -627,6 +638,7 @@ mod tests {
         assert!(matches!(slot.take(), SlotResult::Ready(_)));
     }
 
+    /// Empty images are rejected; nonzero images are retained with their size.
     #[test]
     fn empty_images_are_rejected_and_other_sizes_are_kept_for_the_drain() {
         let now = web_time::Instant::now();
@@ -697,6 +709,7 @@ mod tests {
         assert!(!accepted([151, 76]), "a different framebuffer size is a resize, not a fit");
     }
 
+    /// Pixel-memory budgets use checked geometry and reject zero, NaN, or overflowing sizes.
     #[test]
     fn budgets_use_checked_geometry_and_reject_zero_or_nan_sizes() {
         let g = Geometry { size: Vec2::new(100.0, 50.0), pixels_per_point: 2.0, viewport: ViewportId::ROOT, epoch: 1 };
@@ -707,6 +720,7 @@ mod tests {
         assert_eq!(Geometry { size: Vec2::new(f32::MAX, f32::MAX), pixels_per_point: f32::MAX, ..g }.image_bytes(), None);
     }
 
+    /// A changed geometry epoch retries instead of saving a stale image.
     #[test]
     fn a_geometry_epoch_change_retries_instead_of_saving() {
         let now = web_time::Instant::now();
@@ -731,6 +745,7 @@ mod tests {
         assert!(cap.requests[0].issued.is_none());
     }
 
+    /// A document change after admission fails the request before any file is written.
     #[test]
     fn a_document_change_fails_before_writing() {
         let now = web_time::Instant::now();
@@ -751,6 +766,7 @@ mod tests {
         assert_eq!(reply["ok"], false);
     }
 
+    /// A timed-out capture replies with failure and releases its reservation.
     #[test]
     fn timeout_replies_once_and_releases_the_reservation() {
         let now = web_time::Instant::now();
@@ -769,6 +785,7 @@ mod tests {
         assert_eq!(rx.recv().unwrap()["ok"], false);
     }
 
+    /// An out-of-order completion is written to the path belonging to its own token.
     #[test]
     fn distinct_tokens_keep_distinct_paths_even_when_completed_out_of_order() {
         let now = web_time::Instant::now();

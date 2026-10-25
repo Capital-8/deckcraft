@@ -299,6 +299,8 @@ mod tests {
         out
     }
 
+    /// The UI font library supplies default text fonts and an explicit monochrome emoji face,
+    /// independent of kittest defaults.
     #[test]
     fn the_ui_library_has_default_fonts_and_explicit_monochrome_emoji_for_tests() {
         // `egui`'s `default_fonts` is no longer a default feature and kittest's own dev
@@ -315,6 +317,9 @@ mod tests {
         assert!(ours.font_data.contains_key("Hack"));
     }
 
+    /// When the Chinese face is present (required builds guarantee it), exactly one LXGW WenKai
+    /// Lite Regular is embedded, and Chinese labels have glyph coverage and ink; builds without the
+    /// optional face skip this test.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn native_chinese_fallback_draws_initial_document_labels() {
@@ -359,6 +364,8 @@ mod tests {
         }
     }
 
+    /// When the face is present (required builds guarantee it), the native Hebrew fallback is exactly
+    /// one static Regular Noto Sans Hebrew face with glyph coverage and ink for language labels.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn native_hebrew_fallback_is_one_regular_face_and_draws_language_labels() {
@@ -399,6 +406,7 @@ mod tests {
         }
     }
 
+    /// Hebrew fallback preserves logical-order editing in mixed-direction text.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn native_hebrew_fallback_keeps_mixed_text_editing_in_logical_order() {

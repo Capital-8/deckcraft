@@ -39,6 +39,7 @@ pub fn note_missing_fonts(app: &mut SlideApp) {
     }
 }
 
+/// Render and dismiss the active transient toast without disturbing the document.
 pub fn show(app: &mut SlideApp, ctx: &egui::Context) {
     let Some(toast) = &app.toast else { return };
     if crate::now_ms() - toast.at > SHOW_MS {

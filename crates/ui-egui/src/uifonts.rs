@@ -26,6 +26,8 @@ fn accepts_face(byte_len: usize, color: bool) -> bool {
     !color && byte_len <= MAX_FACE_BYTES
 }
 
+/// Accept a face only when checked addition stays within the aggregate interface-font byte
+/// budget.
 fn aggregate_accepts(total: usize, byte_len: usize) -> bool {
     total.checked_add(byte_len).is_some_and(|n| n <= MAX_AGGREGATE_BYTES)
 }
@@ -199,6 +201,8 @@ mod tests {
         FontDb::global().face(family, "Regular")
     }
 
+    /// The aggregate font budget accepts the exact cap and rejects overflow or over-budget
+    /// additions.
     #[test]
     fn aggregate_font_budget_is_bounded_and_checked() {
         assert!(aggregate_accepts(0, MAX_FACE_BYTES), "the first face is accepted at the per-face limit");

@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{DocState, HistoryEntry, Result, Selection, Session, Target, TextSel, push_undo};
 
+/// Catalogue text-editing, selection, autocorrect, font, IME, and surrounding-deletion commands
+/// with their parameter docs and enabled predicates.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "font.used", "Fonts in Presentation", [], None, "{} → [family] (theme fonts resolved)", has_doc, fonts_used),
@@ -196,6 +198,7 @@ fn composition_range(body: &TextBody, c: Option<&crate::Composition>) -> Option<
     (start < end).then_some((c.start.0, start, end))
 }
 
+/// Return the composition character range only when its paragraph index equals `pi`.
 fn comp_in(comp: Option<(usize, usize, usize)>, pi: usize) -> Option<(usize, usize)> {
     comp.filter(|(p, _, _)| *p == pi).map(|(_, s, e)| (s, e))
 }
@@ -1422,6 +1425,9 @@ fn count_param(p: &Value, name: &str) -> usize {
     p.get(name).and_then(Value::as_u64).map_or(0, |v| usize::try_from(v).unwrap_or(usize::MAX))
 }
 
+/// Delete at most the requested character or byte counts around the selection or pre-edit,
+/// preserving selection direction and composition boundaries and recording one undo step
+/// outside composition.
 fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     let before = count_param(p, "before");
     let after = count_param(p, "after");
@@ -1934,6 +1940,7 @@ mod ime_surrounding_tests {
 
     use crate::Session;
 
+    /// Test helper: insert and enter a rectangle containing `aé😀b`, returning its shape id.
     fn edit(s: &mut Session) -> u64 {
         let r = s.execute("shape.insert", &json!({"preset": "rect", "rect": [10, 10, 240, 60], "text": "aé😀b"})).unwrap();
         let id = r["id"].as_u64().unwrap();
@@ -1941,11 +1948,13 @@ mod ime_surrounding_tests {
         id
     }
 
+    /// Test helper: return the identified shape's text, or an empty string when it is gone.
     fn text(s: &Session, id: u64) -> String {
         let id = deckcraft_model::ShapeId(u32::try_from(id).unwrap());
         s.doc().unwrap().shape(id).and_then(|sh| sh.text.as_ref()).map(deckcraft_model::text::TextBody::text).unwrap_or_default()
     }
 
+    /// Test helper: set an in-paragraph text selection through the engine command path.
     fn select(s: &mut Session, anchor: usize, caret: usize) {
         s.execute("text.select", &json!({"anchor": [0, anchor], "caret": [0, caret]})).unwrap();
     }

@@ -42,6 +42,7 @@ impl eframe::App for App {
         apple_events::poll(&self.1, &mut self.0, ctx);
         self.0.logic(ctx);
     }
+    /// Forward native raw input to the wrapped application once per pass.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(ctx, raw);
     }
@@ -180,6 +181,8 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
+/// Install logging, parse startup arguments and environment, launch the native app, and
+/// propagate an eframe startup failure.
 fn main() -> eframe::Result {
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Session) is captured; see `logging`.

@@ -39,6 +39,7 @@ fn date_run(h: &Harness<'_, SlideApp>) -> Option<deckcraft_model::Run> {
         .cloned()
 }
 
+/// Insert opens date/time settings, and OK inserts exactly one field.
 #[test]
 fn insert_opens_the_dialog_and_ok_inserts_one_field() {
     let mut h = harness();

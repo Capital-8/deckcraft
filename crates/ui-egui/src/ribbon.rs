@@ -311,6 +311,8 @@ fn edge_cue(ui: &mut Ui, rect: Rect, glyph: &str, hint: &str, t: &Tokens) -> boo
     resp.clicked()
 }
 
+/// Draw a large ribbon command button, honour its enabled state, run the command on click, and
+/// attach its menu.
 fn big(app: &mut SlideApp, ui: &mut Ui, icon: Icon, label: &str, id: &str, p: Value) {
     let en = enabled(app, id);
     let r = big_button(ui, icon, label, en);
@@ -481,6 +483,7 @@ fn layout_menu(app: &mut SlideApp, ui: &mut Ui, cmd: &str) {
     });
 }
 
+/// Render the Home Slides group: New Slide, Layout, Reset, and Section controls.
 fn slides_group(app: &mut SlideApp, ui: &mut Ui) {
     group(ui, |ui| {
         let (main, arrow) = big_button_ex(ui, Icon::NewSlide, "New\nSlide", enabled(app, "slide.new"), true, false);
@@ -776,6 +779,7 @@ fn smartart_gallery(
     });
 }
 
+/// Render paragraph formatting controls using the current paragraph state.
 fn paragraph_group(app: &mut SlideApp, ui: &mut Ui, st: &Value) {
     let en = enabled(app, "format.bullets");
     group(ui, |ui| {
@@ -1000,6 +1004,7 @@ fn kurbo_flatten(path: &deckcraft_geom::BezPath, mut f: impl FnMut(Fl)) {
     });
 }
 
+/// Render drawing controls for shapes, text, arrange, quick styles, fill, and outline.
 fn drawing_group(app: &mut SlideApp, ui: &mut Ui) {
     group(ui, |ui| {
         let en = enabled(app, "shape.insert");
@@ -1589,6 +1594,8 @@ fn draw(app: &mut SlideApp, ui: &mut Ui) {
 
 // ---------- Design ----------
 
+/// Render the Design tab's themes, variants, colours, fonts, effects, background, and slide
+/// size controls.
 fn design(app: &mut SlideApp, ui: &mut Ui) {
     let themes = deckcraft_model::theme::builtin_themes();
     let cur = app.session.active().and_then(|d| d.doc.masters.first().map(|m| m.theme.name.clone())).unwrap_or_default();
@@ -1756,6 +1763,8 @@ pub fn paint_theme_tile(p: &egui::Painter, r: Rect, th: &deckcraft_model::Theme)
 
 // ---------- Transitions ----------
 
+/// Render transition preview, gallery, options, sound, and timing controls for the current
+/// slide.
 fn transitions(app: &mut SlideApp, ui: &mut Ui) {
     let cur = app.session.active().and_then(|d| d.current_slide().and_then(|s| s.transition.clone()));
     let kind = cur.as_ref().map(|t| t.kind.clone()).unwrap_or_else(|| "none".into());
@@ -1985,6 +1994,7 @@ pub fn paint_transition_tile(p: &egui::Painter, r: Rect, (id, label): (&str, &st
 
 // ---------- Animations ----------
 
+/// Render animation preview, gallery, add/effect options, trigger, timing, and playback controls.
 fn animations(app: &mut SlideApp, ui: &mut Ui) {
     let has_sel = app.session.active().is_some_and(|d| !d.selection.shapes.is_empty());
     let cur: Option<deckcraft_model::Animation> = app.session.active().and_then(|d| {
@@ -2509,6 +2519,7 @@ fn stroke_guide(p: &egui::Painter, g: &deckcraft_geom::warp::Guide, color: Color
     }
 }
 
+/// Render the Shape Format tab's shape, fill, outline, effects, text, arrange, and size controls.
 fn shape_format(app: &mut SlideApp, ui: &mut Ui) {
     let sc = scheme(app);
     let sel = enabled(app, "shape.fill");
@@ -2628,6 +2639,7 @@ fn shape_format(app: &mut SlideApp, ui: &mut Ui) {
     });
 }
 
+/// Render ordering, align, group/ungroup, and rotate controls for the current selection.
 fn arrange_group(app: &mut SlideApp, ui: &mut Ui) {
     group(ui, |ui| {
         let sel = enabled(app, "arrange.bringForward");
@@ -2682,6 +2694,7 @@ fn arrange_group(app: &mut SlideApp, ui: &mut Ui) {
     });
 }
 
+/// Render width and height controls bound to the selected shape, plus the size-position dialog.
 fn size_group(app: &mut SlideApp, ui: &mut Ui) {
     let bx = app
         .session
@@ -2713,6 +2726,8 @@ fn size_group(app: &mut SlideApp, ui: &mut Ui) {
     });
 }
 
+/// Render the Picture Format tab's corrections, colour, artistic effects, transparency, styles,
+/// border, and picture actions.
 fn picture_format(app: &mut SlideApp, ui: &mut Ui) {
     group(ui, |ui| {
         let r = big_button(ui, Icon::RemoveBackground, "Remove\nBackground", enabled(app, "picture.removeBackground"));

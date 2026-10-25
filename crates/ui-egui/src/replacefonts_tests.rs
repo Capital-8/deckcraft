@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::{Services, SlideApp};
 
+/// Build the standard Replace Fonts UI harness with a fresh session.
 fn harness() -> Harness<'static, SlideApp> {
     let mut s = Session::with_new();
     s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
@@ -50,6 +51,8 @@ fn reveal_ribbon_end(h: &mut Harness<'_, SlideApp>) {
     }
 }
 
+/// The ribbon command opens Replace Fonts; its Replace button updates the document and leaves
+/// the dialog open with a confirmation.
 #[test]
 fn ribbon_button_opens_the_dialog_and_replaces() {
     let mut h = harness();

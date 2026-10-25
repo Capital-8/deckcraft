@@ -136,6 +136,7 @@ fn pattern_gallery_shows_which_swatch_has_keyboard_focus() {
     assert!(outlined(&h), "the focused swatch is outlined");
 }
 
+/// A solid fill shows its transparency slider and does not expose a pattern gallery.
 #[test]
 fn shape_solid_fill_keeps_its_transparency_without_a_pattern_gallery() {
     let (mut s, _) = patterned_shape();

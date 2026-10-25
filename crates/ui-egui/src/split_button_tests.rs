@@ -34,6 +34,7 @@ fn harness(tab: &str) -> (Harness<'static, SlideApp>, [ShapeId; 2]) {
     (h, ids)
 }
 
+/// Click the accessible button or chevron with the given name and run three harness steps.
 fn click(h: &mut Harness<'static, SlideApp>, name: &str) {
     h.get_by_role_and_label(Role::Button, name).click();
     h.run_steps(3);
@@ -52,6 +53,7 @@ fn both_halves_open_same_menu(tab: &str, name: &str, item: &str) {
     }
 }
 
+/// Both the Home Layout label and chevron open and toggle the same layout menu.
 #[test]
 fn home_layout_opens_the_layout_menu_from_its_label_and_arrow() {
     both_halves_open_same_menu("Home", "Layout", "Title Slide");
@@ -91,17 +93,21 @@ fn home_section_menu_enters_wraps_and_closes_from_either_keyboard_trigger() {
     }
 }
 
+/// Main and chevron halves of Shape Effects open the same effects menu on Home and Shape
+/// Format.
 #[test]
 fn shape_effects_opens_the_effects_menu_from_its_label_and_arrow_on_both_tabs() {
     both_halves_open_same_menu("Home", "Shape Effects", "Format Shape…");
     both_halves_open_same_menu("Shape Format", "Shape Effects", "Format Shape…");
 }
 
+/// Text Fill's label and chevron both open its colour menu.
 #[test]
 fn shape_format_text_fill_opens_its_colour_menu_from_its_label_and_arrow() {
     both_halves_open_same_menu("Shape Format", "Text Fill", "More Colors… #");
 }
 
+/// The Group main area executes grouping while only its chevron opens the group menu.
 #[test]
 fn shape_format_group_main_groups_and_its_arrow_opens_the_group_menu() {
     let (mut h, _) = harness("Shape Format");
@@ -116,6 +122,7 @@ fn shape_format_group_main_groups_and_its_arrow_opens_the_group_menu() {
     assert!(h.query_by_label("Ungroup").is_some(), "the arrow opens the Group actions");
 }
 
+/// The Rotate main area rotates while its chevron opens the rotate menu.
 #[test]
 fn shape_format_rotate_main_rotates_and_its_arrow_opens_the_rotate_menu() {
     let (mut h, ids) = harness("Shape Format");

@@ -83,6 +83,8 @@ fn harness() -> Harness<'static, SlideApp> {
     h
 }
 
+/// Apply one deterministic random UI/document action and return a label describing it for the
+/// soak log, which is used as context when a later assertion fails.
 fn act(h: &mut Harness<'_, SlideApp>, r: &mut Rng) -> String {
     match r.below(9) {
         0..=2 => {

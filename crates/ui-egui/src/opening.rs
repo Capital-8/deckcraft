@@ -191,6 +191,8 @@ mod tests {
         assert!(app.toast.as_ref().is_some_and(|t| t.text.contains("missing.pptx")), "the reason is shown");
     }
 
+    /// Opening a path displays progress; cancelling closes the progress window without opening the
+    /// deck.
     #[test]
     fn the_progress_window_shows_and_cancel_closes_it() {
         use egui_kittest::kittest::Queryable;

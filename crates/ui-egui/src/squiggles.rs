@@ -64,6 +64,7 @@ struct Done {
     ranges: Vec<(Tag, usize, usize)>,
 }
 
+/// Return the shared application clock in milliseconds for spelling-squiggle animation timing.
 fn now_ms() -> f64 {
     crate::now_ms()
 }

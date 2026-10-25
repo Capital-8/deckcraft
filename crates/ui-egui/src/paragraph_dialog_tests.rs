@@ -60,6 +60,7 @@ fn paragraph_button_aligns_text_in_one_undo() {
     assert_eq!(h.state().session.active().unwrap().history.undo.last().unwrap().label, "Paragraph…");
 }
 
+/// Paragraph-dialog tab settings apply the chosen stop and return to the paragraph controls.
 #[test]
 fn tabs_from_paragraph_applies_a_stop_and_returns() {
     let mut h = harness();

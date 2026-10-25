@@ -409,6 +409,8 @@ mod tests {
         assert!(feature("liga").is_some());
     }
 
+    /// When the Latin build input exists, the runtime catalogue carries the expected Latin faces;
+    /// required builds also assert their presence.
     #[test]
     fn craft_fonts_latin_when_present() {
         let required = option_env!("CRAFT_FONTS_REQUIRED").is_some();
