@@ -1,6 +1,7 @@
 use super::{
-    Cell, Fill, LayoutType, PhType, Presentation, Run, SchemeSlot, Shape, ShapeKind, ShapeStyle, Slide, TextBody, Theme, Xfrm, defaults, resolve,
-    style, text, theme, walk,
+    ColorRef, Fill, LayoutType, Paragraph, PhType, Placeholder, Presentation, Run, RunProps, SchemeSlot, Shape, ShapeId, ShapeKind, ShapeStyle,
+    Slide, Table, TextBody, Theme, Xfrm, defaults, ink_pressure_is_legacy, ink_sample_width, parent_of, resolve, sibling_list_mut, style, text,
+    theme, walk,
 };
 use crate::resolve::Ctx;
 

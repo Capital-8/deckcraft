@@ -5,8 +5,8 @@ use deckcraft_model::{Shape, ShapeKind, Table};
 use serde_json::{Value, json};
 
 use super::{
-    CommandSpec, bad, bool_or, bool_param, color_param, edit_shapes, f64_param, id_param, ok, str_param, table_drawn_heights, targets, usize_param,
-    xfrm_of,
+    CommandSpec, bad, bool_or, bool_param, cmd, color_param, edit_shapes, f64_param, has_selection, has_slide, id_param, ok, str_param,
+    table_drawn_heights, usize_param, xfrm_of,
 };
 use crate::{DocState, Result, Session};
 

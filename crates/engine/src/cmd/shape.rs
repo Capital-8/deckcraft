@@ -9,8 +9,8 @@ use deckcraft_model::{ColorRef, Effects, Fill, Geom, Line, ShapeStyle};
 use serde_json::{Value, json};
 
 use super::{
-    CommandSpec, NO_ID_SPACE, bad, bool_or, bool_param, color_param, color_value, edit_geometry, edit_shapes, f64_param, format, id_param, ok,
-    str_param, targets, text, three_d, usize_param, with_param, xfrm_of,
+    CommandSpec, NO_ID_SPACE, bad, bool_or, bool_param, cmd, color_param, color_value, edit_geometry, edit_shapes, f64_param, has_selection,
+    has_slide, id_param, ok, str_param, targets, usize_param, with_param, xfrm_of,
 };
 use crate::{Result, Session};
 
@@ -1521,6 +1521,8 @@ fn ink_to_shape(s: &mut Session, _p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    use deckcraft_model::ShapeId;
 
     use super::*;
     use serde_json::json;

@@ -8,8 +8,12 @@ use deckcraft_model::{ColorRef, ColorTransform, Effects, Fill, Line, SchemeSlot,
 use serde_json::{Value, json};
 
 use super::text::{format_body, format_para, format_run};
-use super::{CommandSpec, bad, bool_or, bool_param, color_param, edit_shapes, f64_or, f64_param, ids_param, ok, str_param};
+use super::{
+    CommandSpec, always, bad, base64_decode, bool_or, bool_param, cmd, color_param, edit_shapes, f64_or, f64_param, has_doc, has_text,
+    has_text_or_shapes, ids_param, ok, str_param,
+};
 use crate::{Result, Session};
+use deckcraft_model::ShapeId;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![

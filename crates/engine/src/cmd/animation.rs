@@ -5,7 +5,7 @@ use std::sync::Arc;
 use deckcraft_model::anim::{ANIMATIONS, AnimClass, AnimStart, Animation, TextBuild, animation_info};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, bool_or, bool_param, id_param, ok, str_param, targets, usize_param};
+use super::{CommandSpec, always, bad, bool_or, bool_param, cmd, has_selection, has_slide, id_param, ok, str_param, targets, usize_param};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {

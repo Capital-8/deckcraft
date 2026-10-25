@@ -1,6 +1,15 @@
 use std::sync::Arc;
 
-use super::{Font, PageLayout, PdfError, PdfOptions, Presentation, export, handout_boxes, raster_scale};
+use std::collections::HashMap;
+
+use deckcraft_fonts::FontDb;
+use deckcraft_render::RenderOpts;
+use kurbo::Rect;
+
+use super::{
+    MAX_RASTER_PIXELS, PAPERS, PageLayout, PdfError, PdfOptions, Presentation, export, glyph_text_ranges, handout_boxes, master_text_pieces,
+    master_texts, notes_frames, notes_slide_box, paper_size, raster_scale,
+};
 use deckcraft_model::text::TextBody;
 
 fn deck(n: usize) -> Presentation {

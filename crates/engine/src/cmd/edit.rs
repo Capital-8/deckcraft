@@ -7,7 +7,10 @@ use deckcraft_model::text::TextBody;
 use deckcraft_model::{MediaId, Shape, ShapeId, Slide, SlideId};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, NO_ID_SPACE, bad, base64_encode, bool_or, id_param, ids_param, ok, richclip, str_param, targets, text, xfrm_of};
+use super::{
+    CommandSpec, NO_ID_SPACE, bad, base64_encode, bool_or, can_redo, can_undo, cmd, has_doc, has_selection, has_slide, id_param, ids_param, ok,
+    richclip, str_param, targets, xfrm_of,
+};
 use crate::{HistoryEntry, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {

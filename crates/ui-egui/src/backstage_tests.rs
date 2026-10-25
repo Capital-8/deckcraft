@@ -12,7 +12,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
 
-use super::theme;
+use crate::backstage::{Backstage, NAV_W, Nav, Page, PrintScope, entries, format_bytes, print_page_size, print_params, print_slides, split_path};
 use crate::{Services, SlideApp};
 
 fn harness(app: SlideApp) -> Harness<'static, SlideApp> {

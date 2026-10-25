@@ -14,7 +14,7 @@ use deckcraft_model::{
 };
 use serde_json::{Value, json};
 
-use super::{CommandSpec, NO_ID_SPACE, bad, bool_or, current_shapes, shape_of, str_param, targets, text, xfrm_of};
+use super::{CommandSpec, NO_ID_SPACE, bad, bool_or, cmd, current_shapes, has_selection, shape_of, str_param, targets, xfrm_of};
 use crate::{EngineError, Result, Session};
 
 /// Deepest outline level the Text Pane allows.

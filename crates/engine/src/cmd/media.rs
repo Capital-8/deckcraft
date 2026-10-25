@@ -5,7 +5,7 @@
 use deckcraft_model::{MediaClip, ShapeId, ShapeKind};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, NO_ID_SPACE, bad, base64_encode, bool_param, edit_shapes, targets};
+use super::{CommandSpec, NO_ID_SPACE, bad, bool_param, cmd, edit_shapes, has_doc, targets};
 use crate::{EngineError, MediaStatus, Result, Session, UiRequest};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -179,7 +179,11 @@ fn gif_play(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use deckcraft_model::ShapeId;
+    use serde_json::json;
+
+    use crate::cmd::base64_encode;
+    use crate::{MediaStatus, Session, UiRequest};
 
     fn wav() -> Vec<u8> {
         let rate = 8000u32;

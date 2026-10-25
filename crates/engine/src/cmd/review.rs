@@ -5,7 +5,9 @@ use std::sync::Arc;
 use deckcraft_model::Comment;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, base64_decode, bool_or, bool_param, f64_or, id_param, ok, str_param, text, usize_param};
+use super::{
+    CommandSpec, always, bad, base64_decode, bool_or, bool_param, cmd, f64_or, has_doc, has_slide, has_text, id_param, ok, str_param, usize_param,
+};
 use crate::{Result, Session, Target, UiRequest};
 
 pub fn specs() -> Vec<CommandSpec> {
