@@ -809,22 +809,15 @@ impl Chart {
 ///   near them.
 /// - All-negative values mirror this: the axis ends at zero when `hi` is above 5/6 of `lo`.
 ///   Mixed signs get headroom at both ends.
-pub fn axis_scale(
-    lo: f64,
-    hi: f64,
-    fmin: Option<f64>,
-    fmax: Option<f64>,
-    major: Option<f64>,
-    max_intervals: usize,
-    headroom: bool,
-) -> (f64, f64, f64) {
-    // Values past ±1e100 aren't axis values; clamping keeps the arithmetic finite.
-    let fin = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| v.clamp(-1e100, 1e100));
-    let (fmin, fmax) = (fin(fmin), fin(fmax));
-    let (lo, hi) = if lo.is_finite() && hi.is_finite() { (lo.min(hi).clamp(-1e100, 1e100), lo.max(hi).clamp(-1e100, 1e100)) } else { (0.0, 1.0) };
-    // Office's automatic limits ("How chart axis limits are determined", as Jon Peltier
-    // summarises it): 5 % of the data range past the data, and zero when the values don't
-    // sit within the top sixth of their largest magnitude. A single value is measured from zero.
+/// The data range [lo, hi] an axis covers, clamped to ±1e100; (0, 1) without finite values.
+fn axis_data_range(lo: f64, hi: f64) -> (f64, f64) {
+    if lo.is_finite() && hi.is_finite() { (lo.min(hi).clamp(-1e100, 1e100), lo.max(hi).clamp(-1e100, 1e100)) } else { (0.0, 1.0) }
+}
+
+/// Office's automatic (min, max) of the data range [lo, hi]. "How chart axis limits are determined",
+/// as Jon Peltier summarises it: 5 % of the data range past the data, and zero when the values don't
+/// sit within the top sixth of their largest magnitude. A single value is measured from zero.
+fn auto_limits(lo: f64, hi: f64, headroom: bool) -> (f64, f64) {
     let flat = hi - lo <= 1e-12 * lo.abs().max(hi.abs());
     let pad = if !headroom {
         0.0
@@ -835,21 +828,23 @@ pub fn axis_scale(
     };
     let auto_lo = if lo >= 0.0 && (flat || lo < hi * 5.0 / 6.0) { 0.0 } else { lo - pad };
     let auto_hi = if hi <= 0.0 && (flat || hi > lo * 5.0 / 6.0) { 0.0 } else { hi + pad };
-    let mut lo = fmin.unwrap_or(auto_lo);
-    let mut hi = fmax.unwrap_or(auto_hi);
-    let mag = lo.abs().max(hi.abs());
-    // Relative to the data's magnitude, so tiny values don't count as flat; all-zero falls back to 1.
-    let unit = if mag == 0.0 { 1.0 } else { mag };
-    if hi - lo <= 1e-12 * mag {
-        // A fixed limit on the far side of the data: the automatic end gives way.
-        match (fmin, fmax) {
-            (None, Some(_)) => lo = if hi > 0.0 { 0.0 } else { hi - hi.abs().max(unit) },
-            (Some(_), None) if lo < 0.0 => hi = 0.0,
-            _ => hi = lo + unit,
-        }
+    (auto_lo, auto_hi)
+}
+
+/// The ends of a span too small to show: with one fixed limit on the far side of the data, the
+/// automatic end gives way; otherwise the span is one `unit` wide.
+fn flat_span_ends(fmin: Option<f64>, fmax: Option<f64>, lo: f64, hi: f64, unit: f64) -> (f64, f64) {
+    match (fmin, fmax) {
+        (None, Some(_)) => (if hi > 0.0 { 0.0 } else { hi - hi.abs().max(unit) }, hi),
+        (Some(_), None) if lo < 0.0 => (lo, 0.0),
+        _ => (lo, lo + unit),
     }
-    let n = max_intervals.clamp(1, 50) as f64;
-    let step = match fin(major).filter(|m| *m > 0.0 && (hi - lo) / m <= 1000.0) {
+}
+
+/// The major step: `major` when it gives at most 1000 intervals, else the smallest 1-2-5 step
+/// that fits `n` intervals over [lo, hi].
+fn axis_step(major: Option<f64>, lo: f64, hi: f64, n: f64, unit: f64) -> f64 {
+    match major.filter(|m| *m > 0.0 && (hi - lo) / m <= 1000.0) {
         Some(m) => m,
         None => {
             let mut step = 10f64.powf(((hi - lo) / n).log10().floor());
@@ -865,7 +860,32 @@ pub fn axis_scale(
             }
             step
         }
-    };
+    }
+}
+
+pub fn axis_scale(
+    lo: f64,
+    hi: f64,
+    fmin: Option<f64>,
+    fmax: Option<f64>,
+    major: Option<f64>,
+    max_intervals: usize,
+    headroom: bool,
+) -> (f64, f64, f64) {
+    // Values past ±1e100 aren't axis values; clamping keeps the arithmetic finite.
+    let fin = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| v.clamp(-1e100, 1e100));
+    let (fmin, fmax) = (fin(fmin), fin(fmax));
+    let (lo, hi) = axis_data_range(lo, hi);
+    let (auto_lo, auto_hi) = auto_limits(lo, hi, headroom);
+    let (mut lo, mut hi) = (fmin.unwrap_or(auto_lo), fmax.unwrap_or(auto_hi));
+    let mag = lo.abs().max(hi.abs());
+    // Relative to the data's magnitude, so tiny values don't count as flat; all-zero falls back to 1.
+    let unit = if mag == 0.0 { 1.0 } else { mag };
+    if hi - lo <= 1e-12 * mag {
+        (lo, hi) = flat_span_ends(fmin, fmax, lo, hi, unit);
+    }
+    let n = max_intervals.clamp(1, 50) as f64;
+    let step = axis_step(fin(major), lo, hi, n, unit);
     let min = fmin.unwrap_or((lo / step + 1e-9).floor() * step);
     let max = fmax.unwrap_or((hi / step - 1e-9).ceil() * step).max(min + step);
     (min, max, step)

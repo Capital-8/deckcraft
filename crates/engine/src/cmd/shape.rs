@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use deckcraft_color::{ColorTransform, Rgba, SchemeSlot};
 use deckcraft_model::style::{Dash, Glow, Gradient, GradientShape, GradientStop, LineEnd, PatternFill, PictureFill, PictureMode, Reflection, Shadow};
-use deckcraft_model::{ColorRef, Effects, Fill, Geom, Line, ShapeStyle};
+use deckcraft_model::{ColorRef, Effects, Fill, Geom, Line, ShapeId, ShapeStyle};
 use serde_json::{Value, json};
 
 use super::{
@@ -556,81 +556,102 @@ fn edit_group_appearance(s: &mut Session, p: &Value, cmd: &str, f: impl Fn(&mut 
     edit_shapes(s, p, cmd, |sh| apply(sh, 0, &f))
 }
 
-fn fill(s: &mut Session, p: &Value) -> Result<Value> {
-    let new_fill: Option<Option<Fill>> = if bool_or(p, "reset", false) {
-        Some(None)
-    } else if bool_or(p, "none", false) {
-        Some(Some(Fill::None))
-    } else if let Some(c) = color_param(p, "color") {
-        Some(Some(Fill::solid(c)))
-    } else if let Some(g) = p.get("gradient") {
-        Some(Some(Fill::Gradient(
-            gradient_param(g).ok_or_else(|| bad("shape.fill", "gradient needs at least two `stops`: [[0, \"#fff\"], [1, \"#000\"]]"))?,
-        )))
-    } else if let Some(pt) = p.get("pattern") {
-        Some(Some(Fill::Pattern(PatternFill {
+/// The fill a `shape.fill` request sets: `Some(None)` clears it, `Some(Some(_))` sets it, and `None`
+/// leaves it as it is.
+fn requested_fill(s: &mut Session, p: &Value) -> Result<Option<Option<Fill>>> {
+    if bool_or(p, "reset", false) {
+        return Ok(Some(None));
+    }
+    if bool_or(p, "none", false) {
+        return Ok(Some(Some(Fill::None)));
+    }
+    if let Some(c) = color_param(p, "color") {
+        return Ok(Some(Some(Fill::solid(c))));
+    }
+    if let Some(g) = p.get("gradient") {
+        let gradient = gradient_param(g).ok_or_else(|| bad("shape.fill", "gradient needs at least two `stops`: [[0, \"#fff\"], [1, \"#000\"]]"))?;
+        return Ok(Some(Some(Fill::Gradient(gradient))));
+    }
+    if let Some(pt) = p.get("pattern") {
+        return Ok(Some(Some(Fill::Pattern(PatternFill {
             preset: pt.get("preset").and_then(Value::as_str).unwrap_or("pct50").to_string(),
             fg: pt.get("fg").and_then(color_value).unwrap_or(ColorRef::scheme(SchemeSlot::Accent1)),
             bg: pt.get("bg").and_then(color_value).unwrap_or(ColorRef::scheme(SchemeSlot::Bg1)),
-        })))
-    } else if p.get("picture").is_some() {
+        }))));
+    }
+    if p.get("picture").is_some() {
         let (name, bytes) = super::insert::media_bytes(&with_param(p, "data", p.get("picture").cloned().unwrap_or_default()), "shape.fill")?;
         let ct = super::insert::content_type(&name, &bytes);
         let media = s.edit(|doc, _| doc.add_media(&name, ct, bytes).ok_or_else(|| bad("shape.fill", NO_ID_SPACE)))?;
-        Some(Some(Fill::Picture(PictureFill { media, ..Default::default() })))
-    } else {
-        None
-    };
+        return Ok(Some(Some(Fill::Picture(PictureFill { media, ..Default::default() }))));
+    }
+    Ok(None)
+}
+
+/// The effective fill of each targeted shape, for a transparency change on an inherited (style) fill.
+fn inherited_fills(s: &Session, p: &Value) -> Result<HashMap<ShapeId, Option<Fill>>> {
+    let st = s.doc()?;
+    let ctx = super::text::ctx_for(&st.doc, &st.selection);
+    let mut fills = HashMap::new();
+    for id in targets(s, p)? {
+        if let Some(sh) = st.shape(id) {
+            deckcraft_model::walk(std::slice::from_ref(sh), &mut |sh, _| {
+                let fill = ctx.as_ref().and_then(|c| {
+                    let (f, ph) = deckcraft_model::resolve::fill(c, sh);
+                    f.map(|f| match f {
+                        Fill::Solid { color } => Fill::solid(ColorRef::rgb(c.color(&color, ph))),
+                        other => other,
+                    })
+                });
+                fills.insert(sh.id, fill);
+            });
+        }
+    }
+    Ok(fills)
+}
+
+/// Applies a `shape.fill` request to one shape: the fill, then its picture options, then transparency.
+fn apply_fill(
+    sh: &mut deckcraft_model::Shape,
+    new_fill: Option<&Option<Fill>>,
+    pic_props: Option<&Value>,
+    transparency: Option<f64>,
+    inherited: &HashMap<ShapeId, Option<Fill>>,
+) -> Result<()> {
+    if let Some(f) = new_fill {
+        sh.fill.clone_from(f);
+    }
+    if let (Some(pp), Some(Fill::Picture(pf))) = (pic_props, sh.fill.as_mut()) {
+        picture_props(pf, pp);
+    }
+    if let (Some(t), Some(Fill::Picture(pf))) = (transparency, sh.fill.as_mut()) {
+        let a = 1.0 - t.clamp(0.0, 1.0);
+        pf.alpha = (a < 1.0).then_some(a);
+        return Ok(());
+    }
+    if let Some(t) = transparency {
+        let base = sh.fill.clone().or_else(|| inherited.get(&sh.id).cloned().flatten());
+        if let Some(Fill::Solid { mut color }) = base {
+            color.mods.retain(|m| !matches!(m, ColorTransform::Alpha(_)));
+            if t > 0.0 {
+                color.mods.push(ColorTransform::Alpha(((1.0 - t.clamp(0.0, 1.0)) * 100_000.0).round() as i32));
+            }
+            sh.fill = Some(Fill::Solid { color });
+        }
+    }
+    Ok(())
+}
+
+fn fill(s: &mut Session, p: &Value) -> Result<Value> {
+    let new_fill = requested_fill(s, p)?;
     let transparency = f64_param(p, "transparency");
     let pic_props = p.get("pictureProps").filter(|v| v.is_object());
     if new_fill.is_none() && transparency.is_none() && pic_props.is_none() {
         return Err(bad("shape.fill", "give `color`, `none`, `gradient`, `pattern`, `picture`, `pictureProps`, `transparency` or `reset`"));
     }
     // Transparency on an inherited (style) fill needs the effective colour.
-    let st = s.doc()?;
-    let ctx_fill = {
-        let ctx = super::text::ctx_for(&st.doc, &st.selection);
-        let mut fills = HashMap::new();
-        for id in targets(s, p)? {
-            if let Some(sh) = st.shape(id) {
-                deckcraft_model::walk(std::slice::from_ref(sh), &mut |sh, _| {
-                    let fill = ctx.as_ref().and_then(|c| {
-                        let (f, ph) = deckcraft_model::resolve::fill(c, sh);
-                        f.map(|f| match f {
-                            Fill::Solid { color } => Fill::solid(ColorRef::rgb(c.color(&color, ph))),
-                            other => other,
-                        })
-                    });
-                    fills.insert(sh.id, fill);
-                });
-            }
-        }
-        fills
-    };
-    edit_group_appearance(s, p, "shape.fill", |sh| {
-        if let Some(f) = &new_fill {
-            sh.fill.clone_from(f);
-        }
-        if let (Some(pp), Some(Fill::Picture(pf))) = (pic_props, sh.fill.as_mut()) {
-            picture_props(pf, pp);
-        }
-        if let (Some(t), Some(Fill::Picture(pf))) = (transparency, sh.fill.as_mut()) {
-            let a = 1.0 - t.clamp(0.0, 1.0);
-            pf.alpha = (a < 1.0).then_some(a);
-            return Ok(());
-        }
-        if let Some(t) = transparency {
-            let base = sh.fill.clone().or_else(|| ctx_fill.get(&sh.id).cloned().flatten());
-            if let Some(Fill::Solid { mut color }) = base {
-                color.mods.retain(|m| !matches!(m, ColorTransform::Alpha(_)));
-                if t > 0.0 {
-                    color.mods.push(ColorTransform::Alpha(((1.0 - t.clamp(0.0, 1.0)) * 100_000.0).round() as i32));
-                }
-                sh.fill = Some(Fill::Solid { color });
-            }
-        }
-        Ok(())
-    })
+    let inherited = inherited_fills(s, p)?;
+    edit_group_appearance(s, p, "shape.fill", |sh| apply_fill(sh, new_fill.as_ref(), pic_props, transparency, &inherited))
 }
 
 /// Applies Format Shape ▸ Picture or texture fill options to a picture fill.
