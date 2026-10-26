@@ -802,6 +802,7 @@ impl Chart {
 /// The (min, max, major unit) of an axis over the data range [lo, hi]: `fmin`/`fmax`/`major`
 /// where the chart fixes them; otherwise Office's automatic limits, rounded out to the smallest
 /// 1-2-5 unit giving at most `max_intervals` intervals:
+/// The data range [lo, hi] an axis covers, clamped to ±1e100; (0, 1) without finite values.
 ///
 /// - **Maximum:** `hi + (hi − lo)/20` (with `headroom`), rounded up to the unit.
 /// - **Minimum:** zero when every value is ≥ 0 and `lo` is below 5/6 of `hi`; otherwise
@@ -809,7 +810,6 @@ impl Chart {
 ///   near them.
 /// - All-negative values mirror this: the axis ends at zero when `hi` is above 5/6 of `lo`.
 ///   Mixed signs get headroom at both ends.
-/// The data range [lo, hi] an axis covers, clamped to ±1e100; (0, 1) without finite values.
 fn axis_data_range(lo: f64, hi: f64) -> (f64, f64) {
     if lo.is_finite() && hi.is_finite() { (lo.min(hi).clamp(-1e100, 1e100), lo.max(hi).clamp(-1e100, 1e100)) } else { (0.0, 1.0) }
 }
