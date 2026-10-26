@@ -74,16 +74,39 @@ impl<'a> SliceDecoder<'a> {
 
     /// Merge mode motion (8.5.3.2.2).
     pub fn derive_merge(&self, g: PbGeom, part: PartMode, merge_idx: usize) -> MvField {
-        let PbGeom { xc, yc, ncb, xp: xp0, yp: yp0, w: w0, h: h0, part_idx: part_idx0 } = g;
+        let (w0, h0) = (g.w, g.h);
+        // With a parallel merge level above 4x4, an 8x8 coding block shares one candidate set.
+        let g = if self.pps.log2_parallel_merge_level > 2 && g.ncb == 8 {
+            PbGeom { xp: g.xc, yp: g.yc, w: g.ncb, h: g.ncb, part_idx: 0, ..g }
+        } else {
+            g
+        };
+        let max = self.sh.max_num_merge_cand as usize;
+        let (list, n) = self.spatial_merge_candidates(&g, part);
+        if merge_idx < n {
+            return self.finish_merge(list[merge_idx], w0, h0);
+        }
+        let mut cands: Vec<MvField> = list[..n].to_vec();
+        cands.extend(self.temporal_merge_candidate(g.xp, g.yp, g.w, g.h));
+        if merge_idx < cands.len() {
+            return self.finish_merge(cands[merge_idx], w0, h0);
+        }
+        self.combined_merge_candidates(&mut cands, max);
+        if merge_idx < cands.len() {
+            return self.finish_merge(cands[merge_idx], w0, h0);
+        }
+        self.zero_merge_candidates(&mut cands, merge_idx);
+        self.finish_merge(cands[merge_idx], w0, h0)
+    }
+
+    /// The spatial candidates A1, B1, B0, A0 and B2 (8.5.3.2.3): the candidates, and how many.
+    fn spatial_merge_candidates(&self, g: &PbGeom, part: PartMode) -> ([MvField; 5], usize) {
+        let PbGeom { xp, yp, w, h, part_idx, .. } = *g;
         let pml = self.pps.log2_parallel_merge_level;
-        let (xp, yp, w, h, part_idx) = if pml > 2 && ncb == 8 { (xc, yc, ncb, ncb, 0) } else { (xp0, yp0, w0, h0, part_idx0) };
-        let g = PbGeom { xc, yc, ncb, xp, yp, w, h, part_idx };
         let same_mer = |xn: i32, yn: i32| (xp >> pml) == (xn >> pml) && (yp >> pml) == (yn >> pml);
-        let avail = |xn: i32, yn: i32| self.pb_avail(&g, xn, yn) && !same_mer(xn, yn);
+        let avail = |xn: i32, yn: i32| self.pb_avail(g, xn, yn) && !same_mer(xn, yn);
         let mut list: [MvField; 5] = [MvField::default(); 5];
         let mut n = 0;
-        let max = self.sh.max_num_merge_cand as usize;
-        // spatial candidates (8.5.3.2.3)
         let pa1 = (xp - 1, yp + h - 1);
         let av_a1 = avail(pa1.0, pa1.1) && !(matches!(part, PartMode::PNx2N | PartMode::PnLx2N | PartMode::PnRx2N) && part_idx == 1);
         let m_a1 = if av_a1 { self.mv_at(pa1.0, pa1.1) } else { MvField::default() };
@@ -130,10 +153,11 @@ impl<'a> SliceDecoder<'a> {
             list[n] = self.mv_at(pb2.0, pb2.1);
             n += 1;
         }
-        if merge_idx < n {
-            return self.finish_merge(list[merge_idx], w0, h0);
-        }
-        // temporal candidate
+        (list, n)
+    }
+
+    /// The temporal candidate (8.5.3.2.8): list 0 from the collocated picture, and list 1 for B slices.
+    fn temporal_merge_candidate(&self, xp: i32, yp: i32, w: i32, h: i32) -> Option<MvField> {
         let mut col = MvField::default();
         let mut col_avail = false;
         if let Some(mv) = self.temporal(xp, yp, w, h, 0, 0) {
@@ -148,30 +172,28 @@ impl<'a> SliceDecoder<'a> {
             col.ref_idx[1] = 0;
             col_avail = true;
         }
-        let mut cands: Vec<MvField> = list[..n].to_vec();
-        if col_avail {
-            cands.push(col);
-        }
-        if merge_idx < cands.len() {
-            return self.finish_merge(cands[merge_idx], w0, h0);
-        }
-        // combined bi-predictive candidates (8.5.3.2.4)
+        col_avail.then_some(col)
+    }
+
+    /// Combined bi-predictive candidates (8.5.3.2.4) from pairs of the original candidates.
+    fn combined_merge_candidates(&self, cands: &mut Vec<MvField>, max: usize) {
         let num_orig = cands.len();
-        if self.sh.is_b() && num_orig > 1 && num_orig < max {
-            let mut comb = 0;
-            while comb < num_orig * (num_orig - 1) && cands.len() < max {
-                let (i0, i1) = COMB[comb];
-                let (c0, c1) = (cands[i0], cands[i1]);
-                if c0.pred(0) && c1.pred(1) && (self.ref_pic(0, c0.ref_idx[0]).poc != self.ref_pic(1, c1.ref_idx[1]).poc || c0.mv[0] != c1.mv[1]) {
-                    cands.push(MvField { mv: [c0.mv[0], c1.mv[1]], ref_idx: [c0.ref_idx[0], c1.ref_idx[1]] });
-                }
-                comb += 1;
+        if !(self.sh.is_b() && num_orig > 1 && num_orig < max) {
+            return;
+        }
+        let mut comb = 0;
+        while comb < num_orig * (num_orig - 1) && cands.len() < max {
+            let (i0, i1) = COMB[comb];
+            let (c0, c1) = (cands[i0], cands[i1]);
+            if c0.pred(0) && c1.pred(1) && (self.ref_pic(0, c0.ref_idx[0]).poc != self.ref_pic(1, c1.ref_idx[1]).poc || c0.mv[0] != c1.mv[1]) {
+                cands.push(MvField { mv: [c0.mv[0], c1.mv[1]], ref_idx: [c0.ref_idx[0], c1.ref_idx[1]] });
             }
+            comb += 1;
         }
-        if merge_idx < cands.len() {
-            return self.finish_merge(cands[merge_idx], w0, h0);
-        }
-        // zero candidates (8.5.3.2.5)
+    }
+
+    /// Zero candidates (8.5.3.2.5) up to and including `merge_idx`.
+    fn zero_merge_candidates(&self, cands: &mut Vec<MvField>, merge_idx: usize) {
         let num_ref = if self.sh.is_b() { self.sh.num_ref_idx[0].min(self.sh.num_ref_idx[1]) } else { self.sh.num_ref_idx[0] } as usize;
         let mut zero_idx = 0;
         while cands.len() <= merge_idx {
@@ -179,7 +201,6 @@ impl<'a> SliceDecoder<'a> {
             cands.push(MvField { mv: [[0; 2]; 2], ref_idx: [r, if self.sh.is_b() { r } else { -1 }] });
             zero_idx += 1;
         }
-        self.finish_merge(cands[merge_idx], w0, h0)
     }
 
     fn finish_merge(&self, mut f: MvField, w: i32, h: i32) -> MvField {
