@@ -608,62 +608,71 @@ impl Chart {
         if ser.is_empty() {
             return (!secondary && self.kind != ChartType::Combo).then_some((0.0, 0.0));
         }
-        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut ext = (f64::INFINITY, f64::NEG_INFINITY);
         let has_stacked_or_percent = ser.iter().any(|s| {
             let k = self.series_kind(s);
             k.stacked() || k.percent()
         });
-
-        let mut percent = false;
-        if has_stacked_or_percent {
-            let n = ser.iter().map(|s| s.values.len()).max().unwrap_or(0);
-            let budget = (ser.len() * n).min(10_000_000);
-            let n_clamped = if ser.is_empty() { 0 } else { n.min(budget / ser.len()) };
-
-            for i in 0..n_clamped {
-                let (mut p, mut m, mut stacked) = (0.0, 0.0, false);
-                for s in &ser {
-                    let k = self.series_kind(s);
-                    let Some(v) = s.values.get(i).copied().flatten().filter(|v| v.is_finite()) else { continue };
-                    if k.percent() {
-                        percent = true;
-                    } else if k.stacked() {
-                        stacked = true;
-                        if v >= 0.0 { p += v } else { m += v }
-                    } else {
-                        hi = hi.max(v);
-                        lo = lo.min(v);
-                    }
-                }
-                if stacked {
-                    hi = hi.max(p);
-                    lo = lo.min(m);
-                }
-            }
+        let percent = if has_stacked_or_percent {
+            self.fold_stacked(&ser, &mut ext)
         } else {
             for s in &ser {
                 for v in s.values.iter().flatten().copied().filter(|v| v.is_finite()) {
-                    hi = hi.max(v);
-                    lo = lo.min(v);
+                    widen(&mut ext, v);
                 }
             }
-        }
+            false
+        };
         if !percent {
-            for s in &ser {
-                if self.series_kind(s).stacked() {
-                    continue;
-                }
-                for y in s.trendline_ys(crate::trendline::series_is_scatter(self.series_kind(s))) {
-                    hi = hi.max(y);
-                    lo = lo.min(y);
-                }
-            }
+            self.fold_trendlines(&ser, &mut ext);
         }
         if percent {
-            lo = lo.min(0.0);
-            hi = hi.max(1.0);
+            ext.0 = ext.0.min(0.0);
+            ext.1 = ext.1.max(1.0);
         }
+        let (lo, hi) = ext;
         Some(if lo <= hi { (lo, hi) } else { (0.0, 0.0) })
+    }
+
+    /// Widens `ext` by the points of the stacked and 100 % series in `ser`; returns whether a
+    /// 100 % series is among them.
+    fn fold_stacked(&self, ser: &[&Series], ext: &mut (f64, f64)) -> bool {
+        let mut percent = false;
+        let n = ser.iter().map(|s| s.values.len()).max().unwrap_or(0);
+        let budget = (ser.len() * n).min(10_000_000);
+        let n_clamped = if ser.is_empty() { 0 } else { n.min(budget / ser.len()) };
+        for i in 0..n_clamped {
+            let (mut p, mut m, mut stacked) = (0.0, 0.0, false);
+            for s in ser {
+                let k = self.series_kind(s);
+                let Some(v) = s.values.get(i).copied().flatten().filter(|v| v.is_finite()) else { continue };
+                if k.percent() {
+                    percent = true;
+                } else if k.stacked() {
+                    stacked = true;
+                    if v >= 0.0 { p += v } else { m += v }
+                } else {
+                    widen(ext, v);
+                }
+            }
+            if stacked {
+                ext.1 = ext.1.max(p);
+                ext.0 = ext.0.min(m);
+            }
+        }
+        percent
+    }
+
+    /// Widens `ext` by the trendlines of the series in `ser` that are not stacked.
+    fn fold_trendlines(&self, ser: &[&Series], ext: &mut (f64, f64)) {
+        for s in ser {
+            if self.series_kind(s).stacked() {
+                continue;
+            }
+            for y in s.trendline_ys(crate::trendline::series_is_scatter(self.series_kind(s))) {
+                widen(ext, y);
+            }
+        }
     }
 
     /// A waterfall's bars as (from, to) on the value axis: each point floats from the running
@@ -1344,6 +1353,12 @@ impl Chart {
             .collect();
         (groups, stats)
     }
+}
+
+/// Widens the (min, max) extent `ext` to include `v`.
+fn widen(ext: &mut (f64, f64), v: f64) {
+    ext.0 = ext.0.min(v);
+    ext.1 = ext.1.max(v);
 }
 
 /// Excel's QUARTILE.EXC position `p·(n+1)` (1-based) on sorted data, clamped to the ends.
