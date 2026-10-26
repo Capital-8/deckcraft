@@ -302,18 +302,18 @@ impl<'a> SliceDecoder<'a> {
         let pa = [(xp - 1, yp + h), (xp - 1, yp + h - 1)];
         let av_a = [self.pb_avail(&g, pa[0].0, pa[0].1), self.pb_avail(&g, pa[1].0, pa[1].1)];
         let is_scaled = av_a[0] || av_a[1];
-        let mut a = self.first_amvp_neighbour(&pa, &av_a, &exact);
+        let mut a = self.first_amvp_neighbour(&pa, &av_a, exact);
         if a.is_none() {
-            a = self.first_amvp_neighbour(&pa, &av_a, &scaled);
+            a = self.first_amvp_neighbour(&pa, &av_a, scaled);
         }
         let pb = [(xp + w, yp - 1), (xp + w - 1, yp - 1), (xp - 1, yp - 1)];
         let av_b = [0, 1, 2].map(|k| self.pb_avail(&g, pb[k].0, pb[k].1));
-        let mut b = self.first_amvp_neighbour(&pb, &av_b, &exact);
+        let mut b = self.first_amvp_neighbour(&pb, &av_b, exact);
         if !is_scaled && b.is_some() {
             a = b;
         }
         if !is_scaled {
-            b = self.first_amvp_neighbour(&pb, &av_b, &scaled);
+            b = self.first_amvp_neighbour(&pb, &av_b, scaled);
         }
         let mut list: [[i16; 2]; 3] = [[0; 2]; 3];
         let mut n = 0;
