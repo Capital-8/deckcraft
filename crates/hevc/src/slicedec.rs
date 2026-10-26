@@ -1366,84 +1366,106 @@ impl<'a> SliceDecoder<'a> {
 
     /// prediction_unit(): parse, derive motion, store it and predict. Returns merge_flag.
     fn prediction_unit(&mut self, g: PbGeom, part: PartMode, skip: bool) -> Result<bool> {
-        let PbGeom { xc, yc, ncb, xp, yp, w, h, part_idx } = g;
         let merge = if skip { true } else { self.dd(MERGE_FLAG) == 1 };
         let mvf = if merge {
-            let idx = if self.sh.max_num_merge_cand > 1 {
-                let mut i = 0;
-                if self.dd(MERGE_IDX) == 1 {
-                    i = 1;
-                    while i < self.sh.max_num_merge_cand - 1 && self.bypass() == 1 {
-                        i += 1;
-                    }
-                }
-                i
-            } else {
-                0
-            };
-            self.derive_merge(PbGeom { xc, yc, ncb, xp, yp, w, h, part_idx }, part, idx as usize)
+            let idx = self.merge_idx();
+            self.derive_merge(g, part, idx as usize)
         } else {
-            let pred_idc = if self.sh.is_b() {
-                if w + h != 12 {
-                    let depth = self.pic.blk_at(xc, yc).depth as usize;
-                    if self.dd(INTER_PRED_IDC + depth) == 1 { 2 } else { self.dd(INTER_PRED_IDC + 4) }
-                } else {
-                    self.dd(INTER_PRED_IDC + 4)
-                }
-            } else {
-                0
-            };
-            let mut ref_idx = [-1i8; 2];
-            let mut mvd = [[0i32; 2]; 2];
-            let mut mvp_flag = [0u32; 2];
-            for l in 0..2 {
-                let used = if l == 0 { pred_idc != 1 } else { pred_idc != 0 };
-                if !used {
-                    continue;
-                }
-                let nref = self.sh.num_ref_idx[l];
-                let mut ri = 0;
-                if nref > 1 {
-                    while ri < nref - 1 {
-                        let bin = if ri < 2 { self.dd(REF_IDX + ri as usize) } else { self.bypass() };
-                        if bin == 0 {
-                            break;
-                        }
-                        ri += 1;
-                    }
-                }
-                ref_idx[l] = ri as i8;
-                if l == 1 && self.sh.mvd_l1_zero && pred_idc == 2 {
-                    mvd[1] = [0, 0];
-                } else {
-                    mvd[l] = self.mvd_coding()?;
-                }
-                mvp_flag[l] = self.dd(MVP_FLAG);
-            }
-            let mut f = MvField { mv: [[0; 2]; 2], ref_idx };
-            for l in 0..2 {
-                if ref_idx[l] < 0 {
-                    continue;
-                }
-                let mvp = self.derive_amvp(PbGeom { xc, yc, ncb, xp, yp, w, h, part_idx }, l, ref_idx[l] as usize, mvp_flag[l] as usize);
-                // mvLX = (mvp + mvd) wrapped to 16 bits (8-94)
-                f.mv[l] = [(mvp[0] as i32 + mvd[l][0]) as i16, (mvp[1] as i32 + mvd[l][1]) as i16];
-            }
-            f
+            self.amvp_motion(g)?
         };
         for l in 0..2 {
             if mvf.ref_idx[l] >= 0 {
                 ensure!((mvf.ref_idx[l] as usize) < self.refs[l].len(), "reference index out of range");
             }
         }
-        // store motion
+        self.store_motion(g.xp, g.yp, g.w, g.h, mvf);
+        self.motion_compensate(g.xp, g.yp, g.w as usize, g.h as usize, &mvf);
+        Ok(merge)
+    }
+
+    /// merge_idx(): the merge candidate index, truncated unary (0 when there is one candidate).
+    fn merge_idx(&mut self) -> u32 {
+        if self.sh.max_num_merge_cand <= 1 {
+            return 0;
+        }
+        let mut i = 0;
+        if self.dd(MERGE_IDX) == 1 {
+            i = 1;
+            while i < self.sh.max_num_merge_cand - 1 && self.bypass() == 1 {
+                i += 1;
+            }
+        }
+        i
+    }
+
+    /// inter_pred_idc: 0 = list 0, 1 = list 1, 2 = both.
+    fn inter_pred_idc(&mut self, xc: i32, yc: i32, w: i32, h: i32) -> u32 {
+        if !self.sh.is_b() {
+            return 0;
+        }
+        if w + h != 12 {
+            let depth = self.pic.blk_at(xc, yc).depth as usize;
+            if self.dd(INTER_PRED_IDC + depth) == 1 { 2 } else { self.dd(INTER_PRED_IDC + 4) }
+        } else {
+            self.dd(INTER_PRED_IDC + 4)
+        }
+    }
+
+    /// ref_idx_lX: truncated unary, the first two bins context-coded.
+    fn ref_idx(&mut self, l: usize) -> u32 {
+        let nref = self.sh.num_ref_idx[l];
+        let mut ri = 0;
+        if nref > 1 {
+            while ri < nref - 1 {
+                let bin = if ri < 2 { self.dd(REF_IDX + ri as usize) } else { self.bypass() };
+                if bin == 0 {
+                    break;
+                }
+                ri += 1;
+            }
+        }
+        ri
+    }
+
+    /// The AMVP branch: parse each used list's reference index, mvd and predictor flag, then add
+    /// every mvd to its predictor.
+    fn amvp_motion(&mut self, g: PbGeom) -> Result<MvField> {
+        let pred_idc = self.inter_pred_idc(g.xc, g.yc, g.w, g.h);
+        let mut ref_idx = [-1i8; 2];
+        let mut mvd = [[0i32; 2]; 2];
+        let mut mvp_flag = [0u32; 2];
+        for l in 0..2 {
+            let used = if l == 0 { pred_idc != 1 } else { pred_idc != 0 };
+            if !used {
+                continue;
+            }
+            ref_idx[l] = self.ref_idx(l) as i8;
+            if l == 1 && self.sh.mvd_l1_zero && pred_idc == 2 {
+                mvd[1] = [0, 0];
+            } else {
+                mvd[l] = self.mvd_coding()?;
+            }
+            mvp_flag[l] = self.dd(MVP_FLAG);
+        }
+        let mut f = MvField { mv: [[0; 2]; 2], ref_idx };
+        for l in 0..2 {
+            if ref_idx[l] < 0 {
+                continue;
+            }
+            let mvp = self.derive_amvp(g, l, ref_idx[l] as usize, mvp_flag[l] as usize);
+            // mvLX = (mvp + mvd) wrapped to 16 bits (8-94)
+            f.mv[l] = [(mvp[0] as i32 + mvd[l][0]) as i16, (mvp[1] as i32 + mvd[l][1]) as i16];
+        }
+        Ok(f)
+    }
+
+    /// Writes a prediction block's motion into the picture's 4x4 motion field.
+    fn store_motion(&mut self, xp: i32, yp: i32, w: i32, h: i32, mvf: MvField) {
         let w4 = self.pic.w4;
         for by in (yp >> 2)..((yp + h) >> 2) {
             let o = by as usize * w4;
             self.pic.mvf[o + (xp >> 2) as usize..o + ((xp + w) >> 2) as usize].fill(mvf);
         }
-        self.motion_compensate(xp, yp, w as usize, h as usize, &mvf);
-        Ok(merge)
     }
 
     fn mvd_coding(&mut self) -> Result<[i32; 2]> {
