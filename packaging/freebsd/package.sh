@@ -41,6 +41,20 @@ fi
 if [[ "${1:-}" != "--skip-build" ]]; then
   (cd "$ROOT" && cargo build --release --locked "${TARGET_ARGS[@]}" -p deckcraft -p deckcraft-cli)
 fi
+
+# Refuse placeholder, wrong-arch or non-FreeBSD binaries (also with --skip-build). Bytes: ELF magic,
+# 64-bit little-endian, OSABI SYSV or FreeBSD, e_machine.
+case "$ARCH" in
+  x86_64) MACHINE=" 3e 00" ;;
+  aarch64) MACHINE=" b7 00" ;;
+  *) echo "error: no ELF machine check for arch '$ARCH'" >&2; exit 1 ;;
+esac
+for f in "$BIN/deckcraft" "$BIN/deckcraft-cli"; do
+  [[ "$(od -An -tx1 -N6 "$f" 2>/dev/null)" == " 7f 45 4c 46 02 01" ]] || { echo "error: $f is not a 64-bit little-endian ELF" >&2; exit 1; }
+  [[ "$(od -An -tx1 -j7 -N1 "$f")" =~ ^\ (00|09)$ ]] || { echo "error: $f is not a FreeBSD ELF (OSABI)" >&2; exit 1; }
+  [[ "$(od -An -tx1 -j18 -N2 "$f")" == "$MACHINE" ]] || { echo "error: $f is not an ELF for $ARCH" >&2; exit 1; }
+done
+
 NAME="deckcraft-$VERSION-freebsd-$ARCH"
 WORK="$CARGO_TARGET_DIR/freebsd-package"
 STAGE="$WORK/$NAME"
